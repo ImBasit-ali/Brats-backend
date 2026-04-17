@@ -22,7 +22,12 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-produ
 
 DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() == 'false'
 
-CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_ALL_ORIGINS = True
+ALLOWED_HOSTS = [
+    "https://brats-backend-production.up.railway.app/",
+    "localhost",
+    "127.0.0.1"
+]
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
