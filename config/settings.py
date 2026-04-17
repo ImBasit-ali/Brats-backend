@@ -20,10 +20,15 @@ MODEL_LOG_PATH = Path(
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-production-!@#$%')
 
-DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() == 'true'
+DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() == 'false'
 
-ALLOWED_HOSTS = ['*']
+CORS_ALLOW_ALL_ORIGINS = False
 
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://your-frontend.vercel.app",
+]
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -98,7 +103,7 @@ USE_TZ = True
 
 # Static files
 STATIC_URL = 'static/'
-STATICSTORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage',
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Media files (uploads)
