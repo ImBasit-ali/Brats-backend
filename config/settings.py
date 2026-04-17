@@ -5,10 +5,26 @@ Django settings for BraTS AI backend.
 import os
 from pathlib import Path
 import dj_database_url
+from dotenv import load_dotenv
 
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
+
+
+def _csv_env(name, default):
+    value = os.environ.get(name)
+    if not value:
+        return default
+    return [item.strip() for item in value.split(',') if item.strip()]
+
+
+def _bool_env(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
 
 # Model assets (override with env vars MODEL_KERAS_PATH / MODEL_LOG_PATH)
 MODEL_KERAS_PATH = Path(
@@ -20,20 +36,28 @@ MODEL_LOG_PATH = Path(
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-production-!@#$%')
 
-DEBUG = 'False'
+DEBUG = _bool_env('DEBUG', False)
 
-CORS_ALLOW_ALL_ORIGINS = True
-ALLOWED_HOSTS = [
-    "https://brats-backend-production.up.railway.app/",
-    "localhost",
-    "127.0.0.1"
-]
+ALLOWED_HOSTS = _csv_env(
+    'ALLOWED_HOSTS',
+    ['brats-backend-production.up.railway.app', 'localhost', '127.0.0.1'],
+)
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://brats-ai-frontend-v513.vercel.app",
-]
+CORS_ALLOW_ALL_ORIGINS = _bool_env('CORS_ALLOW_ALL_ORIGINS', DEBUG)
+CORS_ALLOWED_ORIGINS = _csv_env(
+    'CORS_ALLOWED_ORIGINS',
+    ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://brats-ai-frontend-v513.vercel.app'],
+)
+
+CSRF_TRUSTED_ORIGINS = _csv_env(
+    'CSRF_TRUSTED_ORIGINS',
+    ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://brats-ai-frontend-v513.vercel.app'],
+)
+
+IS_RAILWAY = bool(os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('RAILWAY_PROJECT_ID'))
+
+DEFAULT_LOCAL_DATABASE_URL = f"sqlite:///{(BASE_DIR / 'db.sqlite3').resolve().as_posix()}"
+RAILWAY_DATABASE_URL = os.environ.get('RAILWAY_DATABASE_URL')
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -82,11 +106,16 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 
 # Database
+DATABASE_URL = os.environ.get(
+    'DATABASE_URL',
+    RAILWAY_DATABASE_URL if IS_RAILWAY and RAILWAY_DATABASE_URL else DEFAULT_LOCAL_DATABASE_URL,
+)
+DATABASE_SSL_REQUIRE = DATABASE_URL.startswith(('postgres://', 'postgresql://'))
 DATABASES = {
     'default': dj_database_url.config(
-        default=os.environ.get('DATABASE_URL'),
+        default=DATABASE_URL,
         conn_max_age=600,
-        ssl_require=True
+        ssl_require=DATABASE_SSL_REQUIRE
     )
 
     
@@ -117,13 +146,6 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
-# CORS
-CORS_ALLOW_ALL_ORIGINS = DEBUG
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-]
 
 # REST Framework
 REST_FRAMEWORK = {
