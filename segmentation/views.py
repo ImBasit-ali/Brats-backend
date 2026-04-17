@@ -161,7 +161,7 @@ def stack_preview(request):
         stacked_name = f'stacked_preview_{uuid4().hex}{extension}'
         stacked_file = _create_stacked_file(wrapped_files, extension, stacked_name)
         storage_path = default_storage.save(f'previews/{stacked_name}', stacked_file)
-        preview_url = request.build_absolute_uri(default_storage.url(storage_path))
+        preview_url = _build_public_url(request, default_storage.url(storage_path))
 
         return Response(
             {
@@ -231,6 +231,13 @@ def _write_upload_to_temp(uploaded_file):
         for chunk in uploaded_file.chunks():
             tmp.write(chunk)
         return tmp.name
+
+
+def _build_public_url(request, path):
+    url = request.build_absolute_uri(path)
+    if os.environ.get('RAILWAY_ENVIRONMENT') and url.startswith('http://'):
+        return f"https://{url[len('http://'):]}"
+    return url
 
 
 @api_view(['GET'])

@@ -1,3 +1,5 @@
+import os
+
 from rest_framework import serializers
 from .models import SegmentationJob, UploadedFile
 
@@ -51,17 +53,22 @@ class SegmentationJobResultSerializer(serializers.ModelSerializer):
 
     def get_download_url(self, obj):
         if obj.segmentation_file:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.segmentation_file.url)
+            return self._build_absolute_uri(obj.segmentation_file.url)
         return None
 
-    def _build_file_url(self, file_obj):
+    def _build_absolute_uri(self, path):
         request = self.context.get('request')
-        if file_obj and request:
-            return request.build_absolute_uri(file_obj.file.url)
+        if not request:
+            return path
+
+        url = request.build_absolute_uri(path)
+        if os.environ.get('RAILWAY_ENVIRONMENT') and url.startswith('http://'):
+            return f"https://{url[len('http://'):]}"
+        return url
+
+    def _build_file_url(self, file_obj):
         if file_obj:
-            return file_obj.file.url
+            return self._build_absolute_uri(file_obj.file.url)
         return None
 
     def get_model_input_url(self, obj):
