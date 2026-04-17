@@ -20,7 +20,7 @@ MODEL_LOG_PATH = Path(
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-production-!@#$%')
 
-DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() == 'false'
+DEBUG = 'False'
 
 CORS_ALLOW_ALL_ORIGINS = True
 ALLOWED_HOSTS = [
