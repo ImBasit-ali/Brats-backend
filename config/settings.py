@@ -46,12 +46,28 @@ ALLOWED_HOSTS = _csv_env(
 CORS_ALLOW_ALL_ORIGINS = _bool_env('CORS_ALLOW_ALL_ORIGINS', DEBUG)
 CORS_ALLOWED_ORIGINS = _csv_env(
     'CORS_ALLOWED_ORIGINS',
-    ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://brats-ai-frontend-v513.vercel.app'],
+    [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'https://brats-ai-frontend.vercel.app',
+        'https://brats-ai-frontend-v513.vercel.app',
+    ],
+)
+
+CORS_ALLOWED_ORIGIN_REGEXES = _csv_env(
+    'CORS_ALLOWED_ORIGIN_REGEXES',
+    [r'^https://.*\.vercel\.app$'],
 )
 
 CSRF_TRUSTED_ORIGINS = _csv_env(
     'CSRF_TRUSTED_ORIGINS',
-    ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://brats-ai-frontend-v513.vercel.app'],
+    [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'https://brats-ai-frontend.vercel.app',
+        'https://brats-ai-frontend-v513.vercel.app',
+        'https://*.vercel.app',
+    ],
 )
 
 IS_RAILWAY = bool(os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('RAILWAY_PROJECT_ID'))
