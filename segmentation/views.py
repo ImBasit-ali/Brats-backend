@@ -26,6 +26,7 @@ from .stacking import (
     stack_png_files,
     validate_upload_combination,
 )
+from .model_loader import get_model
 from .tasks import mock_process_segmentation
 
 
@@ -44,6 +45,13 @@ def create_segmentation(request):
             {'error': 'No files uploaded. Please upload at least one NIfTI file.'},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    print('Request received')
+    try:
+        get_model()
+    except Exception as exc:
+        print('ERROR:', str(exc))
+        return Response({'error': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     # Create job
     grade = request.POST.get('grade', 'HGG')

@@ -10,3 +10,5 @@ psycopg2-binary>=2.9,<3.0
 whitenoise>=6.0,<7.0
 dj_database_url
 setuptools>=68.0,<69.0
+requests
+tensorflow>=2.16,<2.19; python_version < "3.13"

@@ -16,6 +16,8 @@ from django.core.files.base import ContentFile
 from django.utils import timezone
 from PIL import Image
 
+from .inference import run_nifti_model_inference
+
 
 def mock_process_segmentation(job_id):
     """
@@ -104,7 +106,7 @@ def _generate_mock_metrics():
 
 
 def _generate_mock_outputs(job):
-    """Create mock ET/WT/TC mask files based on the stacked model input."""
+    """Create ET/WT/TC mask files based on the stacked model input."""
     from .models import UploadedFile
 
     stacked = job.files.filter(modality='stacked').order_by('-uploaded_at').first()
@@ -113,13 +115,16 @@ def _generate_mock_outputs(job):
 
     name_lower = stacked.original_name.lower()
     if name_lower.endswith('.nii') or name_lower.endswith('.nii.gz'):
-        et_file, wt_file, tc_file = _create_nifti_masks(stacked)
+        et_mask, wt_mask, tc_mask, affine, header = run_nifti_model_inference(stacked.file.path)
+        et_file = _save_nifti_temp(et_mask, affine, header.copy(), 'et_mask')
+        wt_file = _save_nifti_temp(wt_mask, affine, header.copy(), 'wt_mask')
+        tc_file = _save_nifti_temp(tc_mask, affine, header.copy(), 'tc_mask')
         et_ext = wt_ext = tc_ext = '.nii.gz'
     elif name_lower.endswith('.png'):
         et_file, wt_file, tc_file = _create_png_masks(stacked)
         et_ext = wt_ext = tc_ext = '.png'
     else:
-        raise ValueError('Unsupported stacked input format for mock output generation.')
+        raise ValueError('Unsupported stacked input format for output generation.')
 
     et_record = UploadedFile.objects.create(
         job=job,
