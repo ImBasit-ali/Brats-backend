@@ -29,6 +29,8 @@ from .stacking import (
 from .model_loader import get_model
 from .tasks import mock_process_segmentation
 
+PREVIEW_MODALITY_PRIORITY = ('t1', 't1ce', 't2', 'flair')
+
 
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser])
@@ -138,11 +140,35 @@ def stack_preview(request):
     """
     files = request.FILES.getlist('files')
     modalities = request.POST.getlist('modalities')
+    preview_mode = request.POST.get('preview_mode', 'full')
 
     if not files:
         return Response(
             {'error': 'No files uploaded. Please upload at least one NIfTI file.'},
             status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if preview_mode == 'fast':
+        selected_file, selected_modality = _pick_preview_upload(files, modalities)
+        extension = infer_extension(selected_file.name)
+        if extension not in ('.nii', '.nii.gz', '.png'):
+            return Response(
+                {'error': 'Only .nii, .nii.gz, and .png files are supported.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        preview_name = f'stacked_preview_{uuid4().hex}{extension}'
+        storage_path = default_storage.save(f'previews/{preview_name}', selected_file)
+        preview_url = _build_public_url(request, default_storage.url(storage_path))
+
+        return Response(
+            {
+                'status': 'stacked',
+                'preview_url': preview_url,
+                'filename': preview_name,
+                'mode': f'fast-{selected_modality}',
+            },
+            status=status.HTTP_200_OK,
         )
 
     temp_paths = []
@@ -239,6 +265,23 @@ def _write_upload_to_temp(uploaded_file):
         for chunk in uploaded_file.chunks():
             tmp.write(chunk)
         return tmp.name
+
+
+def _pick_preview_upload(files, modalities):
+    if len(files) == 1:
+        return files[0], 'single'
+
+    modality_to_file = {}
+    for index, uploaded_file in enumerate(files):
+        modality = modalities[index] if index < len(modalities) else None
+        if modality:
+            modality_to_file[modality] = uploaded_file
+
+    for modality in PREVIEW_MODALITY_PRIORITY:
+        if modality in modality_to_file:
+            return modality_to_file[modality], modality
+
+    return files[0], 'first'
 
 
 def _build_public_url(request, path):
