@@ -143,8 +143,18 @@ def stack_preview(request):
     preview_mode = request.POST.get('preview_mode', 'full')
 
     if not files:
+        named_files = [
+            ('t1', request.FILES.get('t1')),
+            ('t1ce', request.FILES.get('t1ce')),
+            ('t2', request.FILES.get('t2')),
+            ('flair', request.FILES.get('flair')),
+        ]
+        files = [file_obj for _, file_obj in named_files if file_obj is not None]
+        modalities = [modality for modality, file_obj in named_files if file_obj is not None]
+
+    if not files:
         return Response(
-            {'error': 'No files uploaded. Please upload at least one NIfTI file.'},
+            {'success': False, 'error': 'No files uploaded. Please upload at least one NIfTI file.'},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -153,7 +163,7 @@ def stack_preview(request):
         extension = infer_extension(selected_file.name)
         if extension not in ('.nii', '.nii.gz', '.png'):
             return Response(
-                {'error': 'Only .nii, .nii.gz, and .png files are supported.'},
+                {'success': False, 'error': 'Only .nii, .nii.gz, and .png files are supported.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -163,6 +173,7 @@ def stack_preview(request):
 
         return Response(
             {
+                'success': True,
                 'status': 'stacked',
                 'preview_url': preview_url,
                 'filename': preview_name,
@@ -199,12 +210,23 @@ def stack_preview(request):
 
         return Response(
             {
+                'success': True,
                 'status': 'stacked',
                 'preview_url': preview_url,
                 'filename': stacked_name,
                 'mode': upload_mode,
             },
             status=status.HTTP_200_OK,
+        )
+    except ValueError as exc:
+        return Response(
+            {'success': False, 'error': str(exc)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as exc:
+        return Response(
+            {'success': False, 'error': str(exc)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     finally:
         for temp_path in temp_paths:
