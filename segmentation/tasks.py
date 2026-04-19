@@ -184,11 +184,18 @@ def _create_png_masks(stacked_file):
 
 
 def _save_nifti_temp(mask_data, affine, header, label):
-    header.set_data_dtype(np.uint8)
+    # Ensure masks are strictly binary and saved with clean scaling metadata.
+    binary_mask = (mask_data > 0).astype(np.uint8)
+    clean_header = header.copy()
+    clean_header.set_data_dtype(np.uint8)
+    clean_header['cal_min'] = 0
+    clean_header['cal_max'] = 1
+    clean_header['scl_slope'] = 1
+    clean_header['scl_inter'] = 0
     with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp:
         temp_path = tmp.name
     try:
-        nib.save(nib.Nifti1Image(mask_data, affine, header), temp_path)
+        nib.save(nib.Nifti1Image(binary_mask, affine, clean_header), temp_path)
         with open(temp_path, 'rb') as handle:
             return ContentFile(handle.read(), name=f'{label}.nii.gz')
     finally:

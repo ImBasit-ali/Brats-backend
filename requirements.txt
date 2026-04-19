@@ -11,4 +11,7 @@ whitenoise>=6.0,<7.0
 dj_database_url
 setuptools>=68.0,<69.0
 requests
-tensorflow>=2.16,<2.19; python_version < "3.13"
+keras>=3.14,<4.0
+scipy>=1.11,<2.0
+jax>=0.4,<1.0
+jaxlib>=0.4,<1.0

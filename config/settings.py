@@ -28,7 +28,7 @@ def _bool_env(name, default=False):
 
 # Model assets (override with env vars MODEL_KERAS_PATH / MODEL_LOG_PATH)
 MODEL_KERAS_PATH = Path(
-    os.environ.get('MODEL_KERAS_PATH', str(BASE_DIR / 'model_assets' / 'brats-3d-une-final.keras'))
+    os.environ.get('MODEL_KERAS_PATH', str(BASE_DIR / 'model_assets' / 'brats_3d_unet_final.keras'))
 )
 MODEL_LOG_PATH = Path(
     os.environ.get('MODEL_LOG_PATH', str(BASE_DIR / 'model_assets' / 'brats-model.log'))

@@ -1,40 +1,33 @@
 import os
-import tempfile
 import threading
-import sys
+from pathlib import Path
 
-import requests
+os.environ.setdefault('KERAS_BACKEND', 'jax')
+
+import keras
+from keras import ops
 
 MODEL = None
 MODEL_LOCK = threading.Lock()
-MODEL_PATH = os.environ.get(
-    'MODEL_PATH',
-    '/tmp/model.keras' if os.name != 'nt' else os.path.join(tempfile.gettempdir(), 'model.keras'),
-)
 
 
-def download_model():
-    if os.path.exists(MODEL_PATH):
-        return
+def _resolve_model_path() -> Path:
+    configured_path = Path(
+        os.environ.get('MODEL_PATH', 'model_assets/brats_3d_unet_final.keras')
+    )
 
-    print("Downloading model from Google Drive...")
+    if configured_path.is_absolute():
+        return configured_path
 
-    url = os.environ.get("MODEL_URL")
-    if not url:
-        raise Exception("MODEL_URL environment variable is not set")
+    backend_root = Path(__file__).resolve().parent.parent
+    return (backend_root / configured_path).resolve()
 
-    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
 
-    response = requests.get(url, stream=True, timeout=120)
-    if response.status_code != 200:
-        raise Exception("Failed to download model")
-
-    with open(MODEL_PATH, "wb") as file_handle:
-        for chunk in response.iter_content(8192):
-            if chunk:
-                file_handle.write(chunk)
-
-    print("Model downloaded successfully")
+def instance_normalization(x):
+    axes = tuple(range(1, len(x.shape) - 1))
+    mean = ops.mean(x, axis=axes, keepdims=True)
+    variance = ops.var(x, axis=axes, keepdims=True)
+    return (x - mean) / ops.sqrt(variance + 1e-5)
 
 
 def get_model():
@@ -45,17 +38,17 @@ def get_model():
 
     with MODEL_LOCK:
         if MODEL is None:
-            download_model()
-            print("Loading model...")
-            try:
-                from tensorflow.keras.models import load_model
-            except Exception as exc:
+            model_path = _resolve_model_path()
+            if not model_path.exists():
                 raise Exception(
-                    'TensorFlow is not installed for this Python version. '
-                    f'Current Python is {sys.version.split()[0]}. '
-                    'Use Python 3.11 or 3.12 for TensorFlow inference.'
-                ) from exc
-            MODEL = load_model(MODEL_PATH)
+                    f'Model file not found at {model_path}. Set MODEL_PATH to a valid .keras file.'
+                )
+            print("Loading model...")
+            MODEL = keras.models.load_model(
+                str(model_path),
+                custom_objects={'instance_normalization': instance_normalization},
+                compile=False,
+            )
             print("Model loaded successfully")
 
     return MODEL

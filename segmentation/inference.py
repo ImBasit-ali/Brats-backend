@@ -31,7 +31,24 @@ def run_nifti_model_inference(stacked_path):
     wt = _restore_to_original_shape(wt_pred, mapping, original_shape)
     tc = _restore_to_original_shape(tc_pred, mapping, original_shape)
 
+    # Limit overlays to anatomical foreground to avoid slab/box artifacts.
+    brain_mask = _build_brain_mask(volume[..., 0])
+    et = np.logical_and(et, brain_mask)
+    wt = np.logical_and(wt, brain_mask)
+    tc = np.logical_and(tc, brain_mask)
+
     return et.astype(np.uint8), wt.astype(np.uint8), tc.astype(np.uint8), nii.affine, nii.header.copy()
+
+
+def _build_brain_mask(channel):
+    channel = np.asarray(channel, dtype=np.float32)
+    positive = channel[channel > 0]
+    if positive.size == 0:
+        return np.zeros_like(channel, dtype=bool)
+
+    # Use a small foreground threshold to retain brain tissue and suppress empty background.
+    threshold = float(np.percentile(positive, 2.0))
+    return channel > threshold
 
 
 def _prepare_for_model(volume, model):

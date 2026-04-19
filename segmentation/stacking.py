@@ -92,9 +92,7 @@ def stack_nifti_files(uploaded_files: List[UploadedFile]) -> nib.Nifti1Image:
 
     for item in ordered:
         nii = nib.load(item.file.path)
-        data = np.asarray(nii.get_fdata(dtype=np.float32))
-        # 🔥 reduce size (example)
-        data = data[::4, ::4, ::4]   # downsample 4x
+        data = nii.get_fdata(dtype=np.float32)
 
         if data.ndim == 4:
             if data.shape[-1] == 1:

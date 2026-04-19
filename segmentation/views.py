@@ -1,17 +1,13 @@
 import json
-import io
 import os
 import tempfile
-import base64
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import nibabel as nib
-import numpy as np
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
-from PIL import Image
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -32,8 +28,6 @@ from .stacking import (
 )
 from .model_loader import get_model
 from .tasks import mock_process_segmentation
-
-PREVIEW_MODALITY_PRIORITY = ('t1', 't1ce', 't2', 'flair')
 
 
 @api_view(['POST'])
@@ -144,6 +138,7 @@ def stack_preview(request):
     """
     files = request.FILES.getlist('files')
     modalities = request.POST.getlist('modalities')
+
     if not files:
         named_files = [
             ('t1', request.FILES.get('t1')),
@@ -160,21 +155,22 @@ def stack_preview(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    temp_paths = []
     try:
         selected_file, selected_modality = _pick_preview_upload(files, modalities)
         extension = infer_extension(selected_file.name)
         if extension not in ('.nii', '.nii.gz', '.png'):
             raise ValueError('Only .nii, .nii.gz, and .png files are supported.')
 
-        temp_path = _write_upload_to_temp(selected_file)
-        temp_paths.append(temp_path)
-        preview_base64 = _build_preview_base64(temp_path, extension)
+        preview_name = f'stacked_preview_{uuid4().hex}{extension}'
+        storage_path = default_storage.save(f'previews/{preview_name}', selected_file)
+        preview_url = _build_public_url(request, default_storage.url(storage_path))
 
         return Response(
             {
                 'success': True,
-                'preview': preview_base64,
+                'status': 'stacked',
+                'preview_url': preview_url,
+                'filename': preview_name,
                 'mode': f'preview-{selected_modality}',
             },
             status=status.HTTP_200_OK,
@@ -189,10 +185,23 @@ def stack_preview(request):
             {'success': False, 'error': str(exc)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-    finally:
-        for temp_path in temp_paths:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
+
+
+def _pick_preview_upload(files, modalities):
+    if len(files) == 1:
+        return files[0], 'single'
+
+    modality_to_file = {}
+    for index, uploaded_file in enumerate(files):
+        modality = modalities[index] if index < len(modalities) else None
+        if modality:
+            modality_to_file[modality] = uploaded_file
+
+    for modality in EXPECTED_MODALITIES:
+        if modality in modality_to_file:
+            return modality_to_file[modality], modality
+
+    return files[0], 'first'
 
 
 def _create_stacked_file(uploaded_files, extension, output_name):
@@ -248,54 +257,6 @@ def _write_upload_to_temp(uploaded_file):
         for chunk in uploaded_file.chunks():
             tmp.write(chunk)
         return tmp.name
-
-
-def _pick_preview_upload(files, modalities):
-    if len(files) == 1:
-        return files[0], 'single'
-
-    modality_to_file = {}
-    for index, uploaded_file in enumerate(files):
-        modality = modalities[index] if index < len(modalities) else None
-        if modality:
-            modality_to_file[modality] = uploaded_file
-
-    for modality in PREVIEW_MODALITY_PRIORITY:
-        if modality in modality_to_file:
-            return modality_to_file[modality], modality
-
-    return files[0], 'first'
-
-
-def _build_preview_base64(file_path, extension):
-    if extension == '.png':
-        image = Image.open(file_path).convert('L')
-        return _encode_image_base64(image)
-
-    if extension in ('.nii', '.nii.gz'):
-        nii = nib.load(file_path)
-        data = nii.get_fdata(dtype=np.float32)
-
-        if data.ndim == 4:
-            data = data[..., 0]
-
-        if data.ndim != 3:
-            raise ValueError('NIfTI preview expects a 3D volume.')
-
-        middle_index = data.shape[2] // 2
-        slice_img = data[:, :, middle_index]
-        slice_img = (slice_img - slice_img.min()) / (slice_img.max() - slice_img.min() + 1e-8)
-        slice_img = (slice_img * 255).astype(np.uint8)
-        image = Image.fromarray(slice_img)
-        return _encode_image_base64(image)
-
-    raise ValueError('Unsupported file type for preview.')
-
-
-def _encode_image_base64(image):
-    buffer = io.BytesIO()
-    image.save(buffer, format='PNG')
-    return base64.b64encode(buffer.getvalue()).decode('ascii')
 
 
 def _build_public_url(request, path):
