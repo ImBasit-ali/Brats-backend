@@ -72,6 +72,11 @@ CSRF_TRUSTED_ORIGINS = _csv_env(
 
 IS_RAILWAY = bool(os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('RAILWAY_PROJECT_ID'))
 
+
+def _ensure_dir(path_value):
+    Path(path_value).mkdir(parents=True, exist_ok=True)
+    return Path(path_value)
+
 DEFAULT_LOCAL_DATABASE_URL = f"sqlite:///{(BASE_DIR / 'db.sqlite3').resolve().as_posix()}"
 RAILWAY_DATABASE_URL = os.environ.get('RAILWAY_DATABASE_URL')
 # Application definition
@@ -158,7 +163,12 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Media files (uploads)
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+if IS_RAILWAY:
+    railway_media_root = os.environ.get('MEDIA_ROOT', '/tmp/brats-media')
+    MEDIA_ROOT = _ensure_dir(railway_media_root)
+    FILE_UPLOAD_TEMP_DIR = str(_ensure_dir(os.environ.get('FILE_UPLOAD_TEMP_DIR', '/tmp/brats-upload-tmp')))
+else:
+    MEDIA_ROOT = BASE_DIR / 'media'
 
 # Honor reverse-proxy headers in production so absolute URLs (e.g. media links)
 # are generated with the correct https scheme and host.
@@ -183,3 +193,9 @@ REST_FRAMEWORK = {
 # File upload size limit (500 MB)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000
 FILE_UPLOAD_MAX_MEMORY_SIZE = 524288000
+
+# Use temporary-file upload handler first to avoid in-memory buffering for large files.
+FILE_UPLOAD_HANDLERS = [
+    'django.core.files.uploadhandler.TemporaryFileUploadHandler',
+    'django.core.files.uploadhandler.MemoryFileUploadHandler',
+]
