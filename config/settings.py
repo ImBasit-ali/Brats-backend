@@ -33,6 +33,7 @@ MODEL_KERAS_PATH = Path(
 MODEL_LOG_PATH = Path(
     os.environ.get('MODEL_LOG_PATH', str(BASE_DIR / 'model_assets' / 'brats-model.log'))
 )
+MODEL_PATH = os.path.join(BASE_DIR, "model", "model.keras")
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-production-!@#$%')
 
