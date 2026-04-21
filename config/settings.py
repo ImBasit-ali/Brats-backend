@@ -72,6 +72,12 @@ CSRF_TRUSTED_ORIGINS = _csv_env(
 
 IS_RAILWAY = bool(os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('RAILWAY_PROJECT_ID'))
 
+# Supabase storage (production file storage)
+SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://ulezkeisiqqarcljuvdi.supabase.co/')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsZXprZWlzaXFxYXJjbGp1dmRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3MzQyMjMsImV4cCI6MjA5MjMxMDIyM30.zKH6_WoYFwbfaomvLyzQAKznATZqJOBdkGYSWYjUb5w')
+SUPABASE_BUCKET = os.environ.get('SUPABASE_BUCKET', 'brats-files')
+USE_SUPABASE_STORAGE = not DEBUG and bool(SUPABASE_URL)
+
 
 def _ensure_dir(path_value):
     Path(path_value).mkdir(parents=True, exist_ok=True)
@@ -199,3 +205,27 @@ FILE_UPLOAD_HANDLERS = [
     'django.core.files.uploadhandler.TemporaryFileUploadHandler',
     'django.core.files.uploadhandler.MemoryFileUploadHandler',
 ]
+
+# Logging
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{asctime}] {levelname} {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'segmentation': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+    },
+}

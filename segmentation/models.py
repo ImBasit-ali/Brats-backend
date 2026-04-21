@@ -9,7 +9,8 @@ class SegmentationJob(models.Model):
         ('pending', 'Pending'),
         ('processing', 'Processing'),
         ('done', 'Done'),
-        ('error', 'Error'),
+        ('failed', 'Failed'),
+        ('error', 'Error'),  # kept for backward compatibility
     ]
 
     GRADE_CHOICES = [
@@ -23,10 +24,23 @@ class SegmentationJob(models.Model):
     regions = models.JSONField(default=dict, blank=True)
     opacity = models.IntegerField(default=70)
 
+    # User scoping (anonymous session-based for now)
+    user_id = models.CharField(max_length=64, blank=True, default='')
+
     # Processing progress
     current_step = models.IntegerField(default=0)
     current_step_name = models.CharField(max_length=50, default='Preprocessing')
     total_steps = models.IntegerField(default=4)
+
+    # File paths / URLs (populated by worker after processing)
+    input_files_json = models.JSONField(default=list, blank=True,
+                                         help_text='List of input file paths or storage keys')
+    stacked_url = models.URLField(max_length=1024, blank=True, default='',
+                                   help_text='URL to the stacked NIfTI volume')
+    mask_url = models.URLField(max_length=1024, blank=True, default='',
+                                help_text='URL to the combined segmentation mask')
+    preview_url = models.URLField(max_length=1024, blank=True, default='',
+                                   help_text='URL to the preview image')
 
     # Results
     metrics = models.JSONField(null=True, blank=True)

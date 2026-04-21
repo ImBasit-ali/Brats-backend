@@ -10,7 +10,7 @@ THRESHOLD = 0.5
 def run_nifti_model_inference(stacked_path):
     """Run model inference on a stacked NIfTI volume and return ET/WT/TC masks."""
     nii = nib.load(stacked_path)
-    volume = nii.get_fdata(dtype=np.float32)
+    volume = np.asarray(nii.dataobj, dtype=np.float32)
 
     if volume.ndim == 3:
         volume = volume[..., np.newaxis]

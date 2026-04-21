@@ -18,12 +18,19 @@ class SegmentationJobCreateSerializer(serializers.Serializer):
 
 
 class SegmentationJobStatusSerializer(serializers.ModelSerializer):
-    """Serializer for job status responses."""
+    """Serializer for job status responses — now includes result URLs."""
     progress = serializers.SerializerMethodField()
+    stacked_url = serializers.SerializerMethodField()
+    mask_url = serializers.SerializerMethodField()
+    preview_url = serializers.SerializerMethodField()
 
     class Meta:
         model = SegmentationJob
-        fields = ['id', 'status', 'progress', 'created_at', 'updated_at']
+        fields = [
+            'id', 'status', 'progress',
+            'stacked_url', 'mask_url', 'preview_url',
+            'created_at', 'updated_at',
+        ]
 
     def get_progress(self, obj):
         steps = ['Preprocess', 'Inference', 'Postprocess', 'Done']
@@ -34,12 +41,53 @@ class SegmentationJobStatusSerializer(serializers.ModelSerializer):
             'steps': steps,
         }
 
+    def get_stacked_url(self, obj):
+        if obj.stacked_url:
+            return self._resolve_url(obj.stacked_url)
+        # Fallback to legacy uploaded file
+        stacked = obj.files.filter(modality='stacked').order_by('-uploaded_at').first()
+        if stacked:
+            return self._build_absolute_uri(stacked.file.url)
+        return None
+
+    def get_mask_url(self, obj):
+        if obj.mask_url:
+            return self._resolve_url(obj.mask_url)
+        # Fallback to legacy whole tumor mask
+        wt = obj.files.filter(modality='wt_mask').order_by('-uploaded_at').first()
+        if wt:
+            return self._build_absolute_uri(wt.file.url)
+        return None
+
+    def get_preview_url(self, obj):
+        if obj.preview_url:
+            return self._resolve_url(obj.preview_url)
+        return None
+
+    def _resolve_url(self, url):
+        """Resolve a URL — if it's a relative /media/ path, make it absolute."""
+        if url.startswith('http://') or url.startswith('https://'):
+            return url
+        return self._build_absolute_uri(url)
+
+    def _build_absolute_uri(self, path):
+        request = self.context.get('request')
+        if not request:
+            return path
+        url = request.build_absolute_uri(path)
+        if os.environ.get('RAILWAY_ENVIRONMENT') and url.startswith('http://'):
+            return f"https://{url[len('http://'):]}"
+        return url
+
 
 class SegmentationJobResultSerializer(serializers.ModelSerializer):
-    """Serializer for job results."""
+    """Serializer for job results — includes URLs for viewer."""
     files = UploadedFileSerializer(many=True, read_only=True)
     download_url = serializers.SerializerMethodField()
     model_input_url = serializers.SerializerMethodField()
+    stacked_url = serializers.SerializerMethodField()
+    mask_url = serializers.SerializerMethodField()
+    preview_url = serializers.SerializerMethodField()
     overlays = serializers.SerializerMethodField()
 
     class Meta:
@@ -47,7 +95,8 @@ class SegmentationJobResultSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'status', 'grade', 'regions', 'metrics',
             'segmentation_file', 'files', 'download_url',
-            'model_input_url', 'overlays',
+            'model_input_url', 'stacked_url', 'mask_url', 'preview_url',
+            'overlays',
             'created_at', 'completed_at',
         ]
 
@@ -66,14 +115,42 @@ class SegmentationJobResultSerializer(serializers.ModelSerializer):
             return f"https://{url[len('http://'):]}"
         return url
 
+    def _resolve_url(self, url):
+        """Resolve a URL — if it's a relative /media/ path, make it absolute."""
+        if not url:
+            return None
+        if url.startswith('http://') or url.startswith('https://'):
+            return url
+        return self._build_absolute_uri(url)
+
     def _build_file_url(self, file_obj):
         if file_obj:
             return self._build_absolute_uri(file_obj.file.url)
         return None
 
     def get_model_input_url(self, obj):
+        # Prefer the new stacked_url field
+        if obj.stacked_url:
+            return self._resolve_url(obj.stacked_url)
         model_input = obj.files.filter(modality='stacked').order_by('-uploaded_at').first()
         return self._build_file_url(model_input)
+
+    def get_stacked_url(self, obj):
+        if obj.stacked_url:
+            return self._resolve_url(obj.stacked_url)
+        model_input = obj.files.filter(modality='stacked').order_by('-uploaded_at').first()
+        return self._build_file_url(model_input)
+
+    def get_mask_url(self, obj):
+        if obj.mask_url:
+            return self._resolve_url(obj.mask_url)
+        wt = obj.files.filter(modality='wt_mask').order_by('-uploaded_at').first()
+        return self._build_file_url(wt)
+
+    def get_preview_url(self, obj):
+        if obj.preview_url:
+            return self._resolve_url(obj.preview_url)
+        return None
 
     def get_overlays(self, obj):
         et = obj.files.filter(modality='et_mask').order_by('-uploaded_at').first()

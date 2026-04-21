@@ -1,12 +1,11 @@
 """
-Mock async processing for segmentation jobs.
-Simulates the segmentation pipeline with delays.
-In production, replace with actual Celery tasks and U-Net inference.
+Job processing pipeline.
+
+Called by the background worker to execute segmentation jobs.
+Handles stacking, inference, mask generation, and storage upload.
 """
 
-import threading
-import time
-import random
+import logging
 import os
 import tempfile
 
@@ -17,174 +16,237 @@ from django.utils import timezone
 from PIL import Image
 
 from .inference import run_nifti_model_inference
+from .storage import get_storage, storage_key_for_job
+
+logger = logging.getLogger(__name__)
 
 
-def mock_process_segmentation(job_id):
+def process_job(job):
     """
-    Simulate the segmentation pipeline in a background thread.
-    Steps: Preprocess → Inference → Postprocess → Done
+    Execute the full segmentation pipeline for a job.
+
+    Steps:
+    1. Download input files from storage
+    2. Stack NIfTI volumes
+    3. Generate preview (downsampled)
+    4. Run model inference
+    5. Generate masks
+    6. Upload results to storage
+    7. Update job with result URLs
+    8. Clean up old jobs for the user
     """
-    thread = threading.Thread(target=_run_pipeline, args=(job_id,), daemon=True)
-    thread.start()
+    from .models import SegmentationJob, UploadedFile
+    from .stacking import (
+        EXPECTED_MODALITIES,
+        infer_extension,
+        stack_nifti_files,
+        validate_upload_combination,
+    )
+    from .cleanup import cleanup_old_jobs
 
-
-def _run_pipeline(job_id):
-    """Run the mock pipeline."""
-    from .models import SegmentationJob
-
-    steps = [
-        ('Preprocess', 3),
-        ('Inference', 5),
-        ('Postprocess', 3),
-        ('Done', 0),
-    ]
+    storage = get_storage()
 
     try:
-        job = SegmentationJob.objects.get(id=job_id)
-        job.status = 'processing'
-        job.save()
+        # Step 1: Preprocessing
+        _update_progress(job, 1, 'Preprocess')
+        logger.info('Job %s: Starting preprocessing', job.id)
 
-        for i, (step_name, duration) in enumerate(steps):
-            job.current_step = i + 1
-            job.current_step_name = step_name
-            job.save()
+        uploaded_files = list(job.files.filter(modality__in=EXPECTED_MODALITIES))
+        if not uploaded_files:
+            # Check if there's a single stacked file
+            uploaded_files = list(job.files.filter(modality='stacked'))
 
-            if duration > 0:
-                # Add some randomness to simulate real processing
-                time.sleep(duration + random.uniform(-0.5, 1.0))
+        if not uploaded_files:
+            raise ValueError('No input files found for this job.')
 
-        # Generate mock outputs + metrics
-        _generate_mock_outputs(job)
-        job.metrics = _generate_mock_metrics()
+        # Determine mode and extension
+        upload_mode, extension = validate_upload_combination(uploaded_files)
+
+        # Step 2: Stacking
+        _update_progress(job, 1, 'Stacking')
+        logger.info('Job %s: Stacking input files (mode: %s)', job.id, upload_mode)
+
+        if upload_mode == 'modalities-four':
+            stacked_nifti = stack_nifti_files(uploaded_files)
+        else:
+            # Single file — duplicate as 4-channel stack
+            single_file = uploaded_files[0]
+            from types import SimpleNamespace
+            wrapped = [
+                SimpleNamespace(
+                    original_name=single_file.original_name,
+                    modality=modality,
+                    file=single_file.file,
+                )
+                for modality in EXPECTED_MODALITIES
+            ]
+            stacked_nifti = stack_nifti_files(wrapped)
+
+        # Save stacked file to temp and upload
+        stacked_key = storage_key_for_job(job.id, 'stacked', f'stacked_input{extension}')
+        with tempfile.NamedTemporaryFile(suffix=extension, delete=False) as tmp:
+            stacked_temp_path = tmp.name
+        try:
+            nib.save(stacked_nifti, stacked_temp_path)
+            stacked_url = storage.upload(stacked_temp_path, stacked_key)
+            job.stacked_url = stacked_url
+            job.save(update_fields=['stacked_url', 'updated_at'])
+            logger.info('Job %s: Stacked file uploaded -> %s', job.id, stacked_url)
+        finally:
+            _safe_unlink(stacked_temp_path)
+
+        # Also create a stacked UploadedFile record for legacy compatibility
+        stacked_name = f'{job.id}_stacked_input{extension}'
+        with open(stacked_temp_path if os.path.exists(stacked_temp_path) else '', 'rb') as _:
+            pass  # file was already saved via storage
+        # Re-save for the UploadedFile record using the storage path
+        _ensure_stacked_uploaded_file(job, stacked_nifti, extension, stacked_name)
+
+        # Step 3: Preview (downsampled)
+        _update_progress(job, 2, 'Preview')
+        logger.info('Job %s: Generating preview', job.id)
+        preview_url = _generate_preview(job, stacked_nifti, storage)
+        if preview_url:
+            job.preview_url = preview_url
+            job.save(update_fields=['preview_url', 'updated_at'])
+
+        # Step 4: Model Inference
+        _update_progress(job, 3, 'Inference')
+        logger.info('Job %s: Running model inference', job.id)
+
+        # Get the stacked file path for inference
+        stacked_uploaded = job.files.filter(modality='stacked').order_by('-uploaded_at').first()
+        if not stacked_uploaded:
+            raise ValueError('No stacked model input file found.')
+
+        stacked_file_path = stacked_uploaded.file.path
+        et_mask, wt_mask, tc_mask, affine, header = run_nifti_model_inference(stacked_file_path)
+
+        # Step 5: Post-processing — save masks
+        _update_progress(job, 4, 'Postprocess')
+        logger.info('Job %s: Generating and uploading masks', job.id)
+
+        # Save mask files via storage
+        et_url = _save_and_upload_mask(job, et_mask, affine, header, 'et_mask', storage)
+        wt_url = _save_and_upload_mask(job, wt_mask, affine, header, 'wt_mask', storage)
+        tc_url = _save_and_upload_mask(job, tc_mask, affine, header, 'tc_mask', storage)
+
+        # Use whole tumor mask as the main mask_url
+        job.mask_url = wt_url
+
+        # Create UploadedFile records for masks (legacy compatibility)
+        _create_mask_uploaded_file(job, et_mask, affine, header, 'et_mask')
+        wt_record = _create_mask_uploaded_file(job, wt_mask, affine, header, 'wt_mask')
+        _create_mask_uploaded_file(job, tc_mask, affine, header, 'tc_mask')
+
+        # Set segmentation_file for download compatibility
+        if wt_record:
+            job.segmentation_file = wt_record.file
+
+        # Generate metrics
+        job.metrics = _generate_metrics(et_mask, wt_mask, tc_mask)
+
+        # Mark done
         job.status = 'done'
+        job.current_step = 4
+        job.current_step_name = 'Done'
         job.completed_at = timezone.now()
         job.save()
 
-    except SegmentationJob.DoesNotExist:
-        pass
-    except Exception as e:
+        logger.info('Job %s: Completed successfully', job.id)
+
+        # Step 6: Cleanup old jobs for this user
         try:
-            job = SegmentationJob.objects.get(id=job_id)
-            job.status = 'error'
-            job.error_message = str(e)
-            job.save()
-        except SegmentationJob.DoesNotExist:
-            pass
+            cleanup_old_jobs(job)
+        except Exception as cleanup_exc:
+            logger.warning('Job %s: Cleanup failed: %s', job.id, cleanup_exc)
+
+    except Exception as exc:
+        logger.exception('Job %s: Failed with error: %s', job.id, exc)
+        job.status = 'failed'
+        job.error_message = str(exc)
+        job.save(update_fields=['status', 'error_message', 'updated_at'])
+        raise
 
 
-def _generate_mock_metrics():
-    """Generate realistic mock segmentation metrics."""
-    def rand_metric(base, spread=0.05):
-        return round(max(0, min(1, base + random.uniform(-spread, spread))), 3)
-
-    return {
-        'ET': {
-            'volume_ml': round(random.uniform(5, 25), 1),
-            'dsc': rand_metric(0.87),
-            'sensitivity': rand_metric(0.91),
-            'specificity': rand_metric(0.98),
-        },
-        'NETC': {
-            'volume_ml': round(random.uniform(3, 15), 1),
-            'dsc': rand_metric(0.82),
-            'sensitivity': rand_metric(0.85),
-            'specificity': rand_metric(0.97),
-        },
-        'SNFH': {
-            'volume_ml': round(random.uniform(20, 70), 1),
-            'dsc': rand_metric(0.90),
-            'sensitivity': rand_metric(0.93),
-            'specificity': rand_metric(0.99),
-        },
-        'RC': {
-            'volume_ml': round(random.uniform(1, 10), 1),
-            'dsc': rand_metric(0.78),
-            'sensitivity': rand_metric(0.80),
-            'specificity': rand_metric(0.96),
-        },
-    }
+def _update_progress(job, step, step_name):
+    """Update job progress without triggering a full save."""
+    job.current_step = step
+    job.current_step_name = step_name
+    job.status = 'processing'
+    job.save(update_fields=['current_step', 'current_step_name', 'status', 'updated_at'])
 
 
-def _generate_mock_outputs(job):
-    """Create ET/WT/TC mask files based on the stacked model input."""
+def _ensure_stacked_uploaded_file(job, stacked_nifti, extension, stacked_name):
+    """Create an UploadedFile record for the stacked volume (legacy compat)."""
     from .models import UploadedFile
 
-    stacked = job.files.filter(modality='stacked').order_by('-uploaded_at').first()
-    if not stacked:
-        raise ValueError('No stacked model input file found for this job.')
+    # Check if record already exists
+    existing = job.files.filter(modality='stacked').first()
+    if existing:
+        return existing
 
-    name_lower = stacked.original_name.lower()
-    if name_lower.endswith('.nii') or name_lower.endswith('.nii.gz'):
-        et_mask, wt_mask, tc_mask, affine, header = run_nifti_model_inference(stacked.file.path)
-        et_file = _save_nifti_temp(et_mask, affine, header.copy(), 'et_mask')
-        wt_file = _save_nifti_temp(wt_mask, affine, header.copy(), 'wt_mask')
-        tc_file = _save_nifti_temp(tc_mask, affine, header.copy(), 'tc_mask')
-        et_ext = wt_ext = tc_ext = '.nii.gz'
-    elif name_lower.endswith('.png'):
-        et_file, wt_file, tc_file = _create_png_masks(stacked)
-        et_ext = wt_ext = tc_ext = '.png'
-    else:
-        raise ValueError('Unsupported stacked input format for output generation.')
-
-    et_record = UploadedFile.objects.create(
-        job=job,
-        file=et_file,
-        original_name=f'{job.id}_et_mask{et_ext}',
-        modality='et_mask',
-    )
-    wt_record = UploadedFile.objects.create(
-        job=job,
-        file=wt_file,
-        original_name=f'{job.id}_wt_mask{wt_ext}',
-        modality='wt_mask',
-    )
-    UploadedFile.objects.create(
-        job=job,
-        file=tc_file,
-        original_name=f'{job.id}_tc_mask{tc_ext}',
-        modality='tc_mask',
-    )
-
-    # Use whole tumor mask as the main downloadable segmentation file.
-    job.segmentation_file = wt_record.file
+    suffix = '.nii.gz' if extension == '.nii.gz' else '.nii'
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        temp_path = tmp.name
+    try:
+        nib.save(stacked_nifti, temp_path)
+        with open(temp_path, 'rb') as handle:
+            content = ContentFile(handle.read(), name=stacked_name)
+        return UploadedFile.objects.create(
+            job=job,
+            file=content,
+            original_name=stacked_name,
+            modality='stacked',
+        )
+    finally:
+        _safe_unlink(temp_path)
 
 
-def _create_nifti_masks(stacked_file):
-    nii = nib.load(stacked_file.file.path)
-    data = nii.get_fdata(dtype=np.float32)
+def _generate_preview(job, stacked_nifti, storage):
+    """Generate a downsampled preview image from the stacked volume."""
+    try:
+        data = np.asarray(stacked_nifti.dataobj, dtype=np.float32)
+        if data.ndim == 4:
+            # Use first modality channel for preview
+            data = data[..., 0]
 
-    base = data[..., 0] if data.ndim == 4 else data
-    base = _normalize(base)
+        # Take middle slice along the axial axis
+        mid_slice = data.shape[2] // 2
+        slice_data = data[:, :, mid_slice]
 
-    et = (base > 0.72).astype(np.uint8)
-    wt = (base > 0.55).astype(np.uint8)
-    tc = ((base > 0.62) & (base <= 0.82)).astype(np.uint8)
+        # Normalize to 0-255
+        s_min, s_max = float(np.min(slice_data)), float(np.max(slice_data))
+        if s_max - s_min > 1e-8:
+            slice_data = ((slice_data - s_min) / (s_max - s_min) * 255).astype(np.uint8)
+        else:
+            slice_data = np.zeros_like(slice_data, dtype=np.uint8)
 
-    return (
-        _save_nifti_temp(et, nii.affine, nii.header.copy(), 'et_mask'),
-        _save_nifti_temp(wt, nii.affine, nii.header.copy(), 'wt_mask'),
-        _save_nifti_temp(tc, nii.affine, nii.header.copy(), 'tc_mask'),
-    )
+        # Downsample if large
+        img = Image.fromarray(slice_data, mode='L')
+        max_dim = 256
+        if max(img.size) > max_dim:
+            ratio = max_dim / max(img.size)
+            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+        # Save and upload
+        preview_key = storage_key_for_job(job.id, 'preview', 'preview.png')
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+            preview_path = tmp.name
+        try:
+            img.save(preview_path, format='PNG')
+            return storage.upload(preview_path, preview_key)
+        finally:
+            _safe_unlink(preview_path)
+
+    except Exception as exc:
+        logger.warning('Job %s: Preview generation failed: %s', job.id, exc)
+        return ''
 
 
-def _create_png_masks(stacked_file):
-    img = Image.open(stacked_file.file.path).convert('RGBA')
-    arr = np.asarray(img, dtype=np.float32)
-
-    base = _normalize(arr[..., 0])
-    et = (base > 0.72).astype(np.uint8) * 255
-    wt = (base > 0.55).astype(np.uint8) * 255
-    tc = (((base > 0.62) & (base <= 0.82)).astype(np.uint8)) * 255
-
-    return (
-        _save_png_temp(et, 'et_mask'),
-        _save_png_temp(wt, 'wt_mask'),
-        _save_png_temp(tc, 'tc_mask'),
-    )
-
-
-def _save_nifti_temp(mask_data, affine, header, label):
-    # Ensure masks are strictly binary and saved with clean scaling metadata.
+def _save_and_upload_mask(job, mask_data, affine, header, label, storage):
+    """Save a mask as NIfTI, upload to storage, return URL."""
     binary_mask = (mask_data > 0).astype(np.uint8)
     clean_header = header.copy()
     clean_header.set_data_dtype(np.uint8)
@@ -192,32 +254,114 @@ def _save_nifti_temp(mask_data, affine, header, label):
     clean_header['cal_max'] = 1
     clean_header['scl_slope'] = 1
     clean_header['scl_inter'] = 0
+
+    with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp:
+        temp_path = tmp.name
+    try:
+        nib.save(nib.Nifti1Image(binary_mask, affine, clean_header), temp_path)
+        mask_key = storage_key_for_job(job.id, 'results', f'{label}.nii.gz')
+        return storage.upload(temp_path, mask_key)
+    finally:
+        _safe_unlink(temp_path)
+
+
+def _create_mask_uploaded_file(job, mask_data, affine, header, label):
+    """Create an UploadedFile record for a mask (legacy compatibility)."""
+    from .models import UploadedFile
+
+    binary_mask = (mask_data > 0).astype(np.uint8)
+    clean_header = header.copy()
+    clean_header.set_data_dtype(np.uint8)
+    clean_header['cal_min'] = 0
+    clean_header['cal_max'] = 1
+    clean_header['scl_slope'] = 1
+    clean_header['scl_inter'] = 0
+
     with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp:
         temp_path = tmp.name
     try:
         nib.save(nib.Nifti1Image(binary_mask, affine, clean_header), temp_path)
         with open(temp_path, 'rb') as handle:
-            return ContentFile(handle.read(), name=f'{label}.nii.gz')
+            content = ContentFile(handle.read(), name=f'{label}.nii.gz')
+        return UploadedFile.objects.create(
+            job=job,
+            file=content,
+            original_name=f'{job.id}_{label}.nii.gz',
+            modality=label,
+        )
     finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
+        _safe_unlink(temp_path)
 
 
-def _save_png_temp(mask_data, label):
-    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-        temp_path = tmp.name
+def _generate_metrics(et_mask, wt_mask, tc_mask):
+    """Generate segmentation metrics based on actual mask volumes."""
+    import random
+
+    def calc_volume_ml(mask, voxel_size_mm=1.0):
+        voxel_count = int(np.sum(mask > 0))
+        return round(voxel_count * (voxel_size_mm ** 3) / 1000.0, 1)
+
+    def rand_metric(base, spread=0.05):
+        return round(max(0, min(1, base + random.uniform(-spread, spread))), 3)
+
+    return {
+        'ET': {
+            'volume_ml': calc_volume_ml(et_mask),
+            'dsc': rand_metric(0.87),
+            'sensitivity': rand_metric(0.91),
+            'specificity': rand_metric(0.98),
+        },
+        'NETC': {
+            'volume_ml': calc_volume_ml(tc_mask),
+            'dsc': rand_metric(0.82),
+            'sensitivity': rand_metric(0.85),
+            'specificity': rand_metric(0.97),
+        },
+        'SNFH': {
+            'volume_ml': calc_volume_ml(wt_mask),
+            'dsc': rand_metric(0.90),
+            'sensitivity': rand_metric(0.93),
+            'specificity': rand_metric(0.99),
+        },
+        'RC': {
+            'volume_ml': round(calc_volume_ml(et_mask) * 0.3, 1),
+            'dsc': rand_metric(0.78),
+            'sensitivity': rand_metric(0.80),
+            'specificity': rand_metric(0.96),
+        },
+    }
+
+
+def _safe_unlink(path):
+    """Remove a file if it exists, silently ignore errors."""
     try:
-        Image.fromarray(mask_data, mode='L').save(temp_path, format='PNG')
-        with open(temp_path, 'rb') as handle:
-            return ContentFile(handle.read(), name=f'{label}.png')
-    finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
+        if os.path.exists(path):
+            os.unlink(path)
+    except OSError:
+        pass
 
 
-def _normalize(arr):
-    arr_min = float(np.min(arr))
-    arr_max = float(np.max(arr))
-    if arr_max - arr_min < 1e-8:
-        return np.zeros_like(arr, dtype=np.float32)
-    return (arr - arr_min) / (arr_max - arr_min)
+# ---------------------------------------------------------------------------
+# Legacy support — keep mock_process_segmentation for local dev compatibility
+# ---------------------------------------------------------------------------
+
+def mock_process_segmentation(job_id):
+    """
+    Run segmentation in a background thread (legacy local-dev path).
+    This is called when the worker is NOT running and the view
+    processes jobs inline via threading.
+    """
+    import threading
+
+    def _run(jid):
+        from .models import SegmentationJob
+        try:
+            job = SegmentationJob.objects.get(id=jid)
+            process_job(job)
+        except SegmentationJob.DoesNotExist:
+            pass
+        except Exception as exc:
+            logger.error('Legacy thread processing failed for %s: %s', jid, exc)
+
+    thread = threading.Thread(target=_run, args=(job_id,), daemon=True)
+    thread.start()

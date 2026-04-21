@@ -4,11 +4,10 @@ from pathlib import Path
 
 os.environ.setdefault('KERAS_BACKEND', 'jax')
 
-import keras
-from keras import ops
-
 MODEL = None
 MODEL_LOCK = threading.Lock()
+KERAS = None
+KERAS_OPS = None
 
 
 def _resolve_model_path() -> Path:
@@ -24,10 +23,26 @@ def _resolve_model_path() -> Path:
 
 
 def instance_normalization(x):
+    if KERAS_OPS is None:
+        raise RuntimeError('Keras backend ops are not initialized.')
     axes = tuple(range(1, len(x.shape) - 1))
-    mean = ops.mean(x, axis=axes, keepdims=True)
-    variance = ops.var(x, axis=axes, keepdims=True)
-    return (x - mean) / ops.sqrt(variance + 1e-5)
+    mean = KERAS_OPS.mean(x, axis=axes, keepdims=True)
+    variance = KERAS_OPS.var(x, axis=axes, keepdims=True)
+    return (x - mean) / KERAS_OPS.sqrt(variance + 1e-5)
+
+
+def _ensure_keras_loaded():
+    global KERAS
+    global KERAS_OPS
+
+    if KERAS is not None and KERAS_OPS is not None:
+        return
+
+    import keras
+    from keras import ops
+
+    KERAS = keras
+    KERAS_OPS = ops
 
 
 def get_model():
@@ -38,13 +53,14 @@ def get_model():
 
     with MODEL_LOCK:
         if MODEL is None:
+            _ensure_keras_loaded()
             model_path = _resolve_model_path()
             if not model_path.exists():
                 raise Exception(
                     f'Model file not found at {model_path}. Set MODEL_PATH to a valid .keras file.'
                 )
             print("Loading model...")
-            MODEL = keras.models.load_model(
+            MODEL = KERAS.models.load_model(
                 str(model_path),
                 custom_objects={'instance_normalization': instance_normalization},
                 compile=False,
