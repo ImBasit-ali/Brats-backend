@@ -40,7 +40,7 @@ def _resolve_model_path() -> Path:
     # Fall back to local MODEL_PATH, defaulting to backend/model_assets model file
     repo_root = Path(__file__).resolve().parent.parent.parent
     configured_path = Path(
-        os.environ.get('MODEL_PATH', 'backend/model_assets/brats_3d_unet_final.keras')
+        os.environ.get('MODEL_PATH', 'model_assets/brats_3d_unet_final.keras')
     )
 
     if configured_path.is_absolute():
