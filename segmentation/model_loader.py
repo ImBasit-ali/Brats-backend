@@ -36,17 +36,17 @@ def _resolve_model_path() -> Path:
     model_url = os.environ.get('MODEL_URL')
     if model_url:
         return _download_model_from_url(model_url)
-    
-    # Fall back to local MODEL_PATH
+
+    # Fall back to local MODEL_PATH, defaulting to backend/model_assets model file
+    repo_root = Path(__file__).resolve().parent.parent.parent
     configured_path = Path(
-        os.environ.get('MODEL_PATH', 'model_assets/brats_3d_unet_final.keras')
+        os.environ.get('MODEL_PATH', 'backend/model_assets/brats_3d_unet_final.keras')
     )
 
     if configured_path.is_absolute():
         return configured_path
 
-    backend_root = Path(__file__).resolve().parent.parent
-    return (backend_root / configured_path).resolve()
+    return (repo_root / configured_path).resolve()
 
 
 def instance_normalization(x):
@@ -93,7 +93,7 @@ def get_model():
                         )
                     else:
                         raise Exception(
-                            f'Model file not found at {model_path}. Set MODEL_PATH to a valid .keras file or MODEL_URL to a remote model URL.'
+                            f'Model file not found at {model_path}. Default is backend/model_assets/brats_3d_unet_final.keras. Set MODEL_PATH to a valid .keras file or MODEL_URL to a remote model URL.'
                         )
                 
                 print("Loading model...")

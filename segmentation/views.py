@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import nibabel as nib
-from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from rest_framework import status
@@ -86,11 +85,6 @@ def create_segmentation(request):
 
     job.input_files_json = input_keys
     job.save(update_fields=['input_files_json'])
-
-    # In local dev with DEBUG=True and no worker running, process inline
-    if settings.DEBUG and not os.environ.get('USE_WORKER'):
-        from .tasks import mock_process_segmentation
-        mock_process_segmentation(str(job.id))
 
     # Return immediately — worker picks up the job
     return Response(
