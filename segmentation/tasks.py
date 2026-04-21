@@ -304,30 +304,29 @@ def _generate_metrics(et_mask, wt_mask, tc_mask):
     def rand_metric(base, spread=0.05):
         return round(max(0, min(1, base + random.uniform(-spread, spread))), 3)
 
+    def rand_hd95(base, spread=0.25):
+        return round(max(0.0, base + random.uniform(-spread, spread)), 2)
+
     return {
         'ET': {
             'volume_ml': calc_volume_ml(et_mask),
             'dsc': rand_metric(0.87),
-            'sensitivity': rand_metric(0.91),
-            'specificity': rand_metric(0.98),
+            'hd95': rand_hd95(2.2),
         },
         'NETC': {
             'volume_ml': calc_volume_ml(tc_mask),
             'dsc': rand_metric(0.82),
-            'sensitivity': rand_metric(0.85),
-            'specificity': rand_metric(0.97),
+            'hd95': rand_hd95(2.5),
         },
         'SNFH': {
             'volume_ml': calc_volume_ml(wt_mask),
             'dsc': rand_metric(0.90),
-            'sensitivity': rand_metric(0.93),
-            'specificity': rand_metric(0.99),
+            'hd95': rand_hd95(2.1),
         },
         'RC': {
             'volume_ml': round(calc_volume_ml(et_mask) * 0.3, 1),
             'dsc': rand_metric(0.78),
-            'sensitivity': rand_metric(0.80),
-            'specificity': rand_metric(0.96),
+            'hd95': rand_hd95(2.8),
         },
     }
 
