@@ -97,9 +97,7 @@ def process_job(job):
 
         # Also create a stacked UploadedFile record for legacy compatibility
         stacked_name = f'{job.id}_stacked_input{extension}'
-        with open(stacked_temp_path if os.path.exists(stacked_temp_path) else '', 'rb') as _:
-            pass  # file was already saved via storage
-        # Re-save for the UploadedFile record using the storage path
+        # Save a separate stacked UploadedFile record for downstream inference.
         _ensure_stacked_uploaded_file(job, stacked_nifti, extension, stacked_name)
 
         # Step 3: Preview (downsampled)
@@ -248,8 +246,10 @@ def _generate_preview(job, stacked_nifti, storage):
 def _save_and_upload_mask(job, mask_data, affine, header, label, storage):
     """Save a mask as NIfTI, upload to storage, return URL."""
     binary_mask = (mask_data > 0).astype(np.uint8)
-    clean_header = header.copy()
-    clean_header.set_data_dtype(np.uint8)
+    # Build a fresh 3D image header to avoid carrying 4D metadata from the stacked input.
+    mask_img = nib.Nifti1Image(binary_mask, affine)
+    mask_img.set_data_dtype(np.uint8)
+    clean_header = mask_img.header
     clean_header['cal_min'] = 0
     clean_header['cal_max'] = 1
     clean_header['scl_slope'] = 1
@@ -258,7 +258,7 @@ def _save_and_upload_mask(job, mask_data, affine, header, label, storage):
     with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp:
         temp_path = tmp.name
     try:
-        nib.save(nib.Nifti1Image(binary_mask, affine, clean_header), temp_path)
+        nib.save(mask_img, temp_path)
         mask_key = storage_key_for_job(job.id, 'results', f'{label}.nii.gz')
         return storage.upload(temp_path, mask_key)
     finally:
@@ -270,8 +270,10 @@ def _create_mask_uploaded_file(job, mask_data, affine, header, label):
     from .models import UploadedFile
 
     binary_mask = (mask_data > 0).astype(np.uint8)
-    clean_header = header.copy()
-    clean_header.set_data_dtype(np.uint8)
+    # Build a fresh 3D image header to avoid carrying 4D metadata from the stacked input.
+    mask_img = nib.Nifti1Image(binary_mask, affine)
+    mask_img.set_data_dtype(np.uint8)
+    clean_header = mask_img.header
     clean_header['cal_min'] = 0
     clean_header['cal_max'] = 1
     clean_header['scl_slope'] = 1
@@ -280,7 +282,7 @@ def _create_mask_uploaded_file(job, mask_data, affine, header, label):
     with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp:
         temp_path = tmp.name
     try:
-        nib.save(nib.Nifti1Image(binary_mask, affine, clean_header), temp_path)
+        nib.save(mask_img, temp_path)
         with open(temp_path, 'rb') as handle:
             content = ContentFile(handle.read(), name=f'{label}.nii.gz')
         return UploadedFile.objects.create(

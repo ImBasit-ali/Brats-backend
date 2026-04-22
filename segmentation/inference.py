@@ -107,6 +107,29 @@ def _to_channels_last(prediction, channels_first):
 def _split_prediction_channels(prediction):
     channels = prediction.shape[-1]
 
+    # Multi-class BraTS-style outputs often include background as channel 0.
+    # Using argmax avoids interpreting background probability as a tumor mask.
+    if channels >= 5:
+        labels = np.argmax(prediction, axis=-1)
+        # Expected class order: [BG, ET, NETC, SNFH, RC]
+        et = labels == 1
+        netc = labels == 2
+        snfh = labels == 3
+        rc = labels == 4
+        wt = et | netc | snfh | rc
+        tc = et | netc | rc
+        return et, wt, tc
+
+    if channels == 4:
+        labels = np.argmax(prediction, axis=-1)
+        # Expected class order: [BG, ET, NETC, SNFH]
+        et = labels == 1
+        netc = labels == 2
+        snfh = labels == 3
+        wt = et | netc | snfh
+        tc = et | netc
+        return et, wt, tc
+
     if channels >= 3:
         et = prediction[..., 0] > THRESHOLD
         wt = prediction[..., 1] > THRESHOLD
