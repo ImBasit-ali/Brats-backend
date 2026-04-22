@@ -6,12 +6,10 @@ MODEL = None
 
 def _resolve_load_model():
     try:
-        tf_models = importlib.import_module("tensorflow.keras.models")
-        return tf_models.load_model
-    except Exception:
-        keras_models = importlib.import_module("keras.models")
-        return keras_models.load_model
-
+        from tensorflow.keras.models import load_model
+        return load_model
+    except ImportError:
+        raise ImportError("TensorFlow/Keras is not installed. Please install tensorflow and keras to load the model.")
 
 def get_model():
     global MODEL

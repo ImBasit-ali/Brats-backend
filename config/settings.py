@@ -28,10 +28,7 @@ def _bool_env(name, default=False):
 
 # Model assets (override with env vars MODEL_KERAS_PATH / MODEL_LOG_PATH)
 MODEL_KERAS_PATH = Path(
-    os.environ.get('MODEL_KERAS_PATH', str(BASE_DIR / 'model_assets' / 'brats_3d_unet_final.keras'))
-)
-MODEL_LOG_PATH = Path(
-    os.environ.get('MODEL_LOG_PATH', str(BASE_DIR / 'model_assets' / 'brats-model.log'))
+    os.environ.get('MODEL_KERAS_PATH', str(BASE_DIR / 'model' / 'model.keras'))
 )
 MODEL_PATH = os.path.join(BASE_DIR, "model", "model.keras")
 
@@ -39,10 +36,8 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-produ
 
 DEBUG = _bool_env('DEBUG', False)
 
-ALLOWED_HOSTS = _csv_env(
-    'ALLOWED_HOSTS',
-    ['brats-backend-production.up.railway.app', 'localhost', '127.0.0.1'],
-)
+ALLOWED_HOSTS = ['.railway.app', 'localhost', '127.0.0.1']
+
 
 CORS_ALLOW_ALL_ORIGINS = _bool_env('CORS_ALLOW_ALL_ORIGINS', DEBUG)
 CORS_ALLOWED_ORIGINS = _csv_env(
@@ -55,27 +50,18 @@ CORS_ALLOWED_ORIGINS = _csv_env(
     ],
 )
 
-CORS_ALLOWED_ORIGIN_REGEXES = _csv_env(
-    'CORS_ALLOWED_ORIGIN_REGEXES',
-    [r'^https://.*\.vercel\.app$'],
-)
-
-CSRF_TRUSTED_ORIGINS = _csv_env(
-    'CSRF_TRUSTED_ORIGINS',
-    [
-        'http://localhost:3000',
-        'http://127.0.0.1:3000',
-        'https://brats-ai-frontend.vercel.app',
-        'https://brats-ai-frontend-v513.vercel.app',
-        'https://*.vercel.app',
-    ],
-)
+CSRF_TRUSTED_ORIGIN_REGEXES = [
+    r"^https://.*\.vercel\.app$",
+]
+CSRF_TRUSTED_ORIGINS = [
+    'https://brats-ai-frontend.vercel.app',
+]
 
 IS_RAILWAY = bool(os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('RAILWAY_PROJECT_ID'))
 
 # Supabase storage (production file storage)
 SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://ulezkeisiqqarcljuvdi.supabase.co/')
-SUPABASE_KEY = os.environ.get('SUPABASE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsZXprZWlzaXFxYXJjbGp1dmRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3MzQyMjMsImV4cCI6MjA5MjMxMDIyM30.zKH6_WoYFwbfaomvLyzQAKznATZqJOBdkGYSWYjUb5w')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 SUPABASE_BUCKET = os.environ.get('SUPABASE_BUCKET', 'brats-files')
 USE_SUPABASE_STORAGE = not DEBUG and bool(SUPABASE_URL)
 
