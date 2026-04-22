@@ -2,7 +2,7 @@ django>=5.0,<6.0
 djangorestframework>=3.15,<4.0
 django-cors-headers>=4.3,<5.0
 python-dotenv>=1.0,<2.0
-numpy>=1.26,<3.0
+numpy>=1.26,<2.2
 nibabel>=5.2,<6.0
 Pillow>=10.0,<12.0
 gunicorn>=20.1,<21.0
@@ -13,7 +13,5 @@ setuptools>=68.0,<69.0
 requests
 keras>=3.14,<4.0
 scipy>=1.11,<2.0
-jax>=0.4,<1.0
-jaxlib>=0.4,<1.0
 supabase>=2.0,<3.0
-tensorflow==2.13.0
+tensorflow==2.19.0; python_version < "3.13"
