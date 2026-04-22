@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import tempfile
@@ -124,25 +125,114 @@ def stack_preview(request):
         )
 
     try:
-        selected_file, selected_modality = _pick_preview_upload(files, modalities)
-        extension = infer_extension(selected_file.name)
+        # Create UploadedFile objects for stacking
+        uploaded_file_objs = []
+        for i, file_obj in enumerate(files):
+            modality = modalities[i] if i < len(modalities) else 't1'
+            # Create a temporary UploadedFile object for stacking
+            temp_uploaded = SimpleNamespace(
+                file=SimpleNamespace(path=None),
+                original_name=file_obj.name,
+                modality=modality
+            )
+            uploaded_file_objs.append(temp_uploaded)
+
+        # Determine extension from first file
+        extension = infer_extension(files[0].name)
         if extension not in ('.nii', '.nii.gz', '.png'):
             raise ValueError('Only .nii, .nii.gz, and .png files are supported.')
 
-        preview_name = f'stacked_preview_{uuid4().hex}{extension}'
-        storage_path = default_storage.save(f'previews/{preview_name}', selected_file)
-        preview_url = _build_public_url(request, default_storage.url(storage_path))
+        # Stack files if there are 4 modalities, otherwise use the single file
+        if len(files) == 4:
+            # Save uploaded files to temporary location for stacking
+            temp_paths = []
+            for file_obj in files:
+                temp_path = default_storage.save(f'temp/{uuid4().hex}_{file_obj.name}', file_obj)
+                temp_paths.append(temp_path)
 
-        return Response(
-            {
-                'success': True,
-                'status': 'stacked',
-                'preview_url': preview_url,
-                'filename': preview_name,
-                'mode': f'preview-{selected_modality}',
-            },
-            status=status.HTTP_200_OK,
-        )
+            try:
+                # Load the files and stack them
+                temp_file_objs = []
+                for temp_path, original_name, modality in zip(temp_paths, [f.name for f in files], modalities):
+                    full_path = default_storage.path(temp_path)
+                    temp_obj = SimpleNamespace(
+                        file=SimpleNamespace(path=full_path),
+                        original_name=original_name,
+                        modality=modality
+                    )
+                    temp_file_objs.append(temp_obj)
+
+                if extension == '.png':
+                    stacked_image = stack_png_files(temp_file_objs)
+                    # Save stacked PNG
+                    stacked_name = f'stacked_preview_{uuid4().hex}.png'
+                    img_bytes = io.BytesIO()
+                    stacked_image.save(img_bytes, format='PNG')
+                    img_bytes.seek(0)
+                    storage_path = default_storage.save(f'previews/{stacked_name}', ContentFile(img_bytes.read()))
+                    mode = 'stacked-4-modalities'
+                else:
+                    # Stack NIfTI files
+                    stacked_nii = stack_nifti_files(temp_file_objs)
+                    # Save stacked NIfTI
+                    stacked_name = f'stacked_preview_{uuid4().hex}.nii.gz'
+                    with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp:
+                        nib.save(stacked_nii, tmp.name)
+                        tmp_path = tmp.name
+
+                    with open(tmp_path, 'rb') as f:
+                        storage_path = default_storage.save(f'previews/{stacked_name}', ContentFile(f.read()))
+                    
+                    # Clean up temporary file
+                    try:
+                        os.unlink(tmp_path)
+                    except:
+                        pass
+                    mode = 'stacked-4-modalities'
+
+                preview_url = _build_public_url(request, default_storage.url(storage_path))
+
+                # Clean up temporary uploaded files
+                for temp_path in temp_paths:
+                    try:
+                        default_storage.delete(temp_path)
+                    except:
+                        pass
+
+                return Response(
+                    {
+                        'success': True,
+                        'status': 'stacked',
+                        'preview_url': preview_url,
+                        'filename': stacked_name,
+                        'mode': mode,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            finally:
+                # Clean up temporary files if something went wrong
+                for temp_path in temp_paths:
+                    try:
+                        default_storage.delete(temp_path)
+                    except:
+                        pass
+        else:
+            # Single file - just save and return
+            preview_name = f'stacked_preview_{uuid4().hex}{extension}'
+            storage_path = default_storage.save(f'previews/{preview_name}', files[0])
+            preview_url = _build_public_url(request, default_storage.url(storage_path))
+
+            return Response(
+                {
+                    'success': True,
+                    'status': 'stacked',
+                    'preview_url': preview_url,
+                    'filename': preview_name,
+                    'mode': f'preview-single',
+                },
+                status=status.HTTP_200_OK,
+            )
+
     except ValueError as exc:
         return Response(
             {'success': False, 'error': str(exc)},
