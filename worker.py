@@ -1,14 +1,6 @@
 #!/usr/bin/env python
 """
 Background worker for processing segmentation jobs.
-
-This is a standalone process that polls the database for pending jobs
-and processes them using the segmentation pipeline. Run as a separate
-Railway service with: python worker.py
-
-Environment:
-    WORKER_POLL_INTERVAL  — seconds between polls (default: 3)
-    WORKER_MAX_RETRIES    — max retries per job on transient failure (default: 2)
 """
 
 import os
@@ -16,6 +8,12 @@ import sys
 import time
 import logging
 import signal
+
+# 🔥 Logging config (ADDED)
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] %(message)s'
+)
 
 # Ensure Django settings are loaded
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
@@ -52,23 +50,31 @@ signal.signal(signal.SIGINT, _handle_signal)
 signal.signal(signal.SIGTERM, _handle_signal)
 
 
+# 🔧 UPDATED preload_model (with debug)
 def preload_model():
     """Load the ML model once at worker startup (singleton pattern)."""
     try:
-        logger.info('Pre-loading segmentation model...')
+        logger.info('🔄 Pre-loading segmentation model...')
+
+        # 🔍 Check model directory
+        model_dir = os.path.join(os.getcwd(), "model")
+        logger.info('📂 Checking model directory: %s', model_dir)
+
+        if os.path.exists(model_dir):
+            logger.info('📁 Model directory exists')
+            logger.info('📄 Files inside model dir: %s', os.listdir(model_dir))
+        else:
+            logger.error('❌ Model directory NOT found!')
+
         model = get_model()
-        logger.info('Model loaded successfully: %s', type(model).__name__)
+
+        logger.info('✅ Model loaded successfully: %s', type(model).__name__)
+
     except Exception as exc:
-        logger.warning('Model pre-load failed (will retry on first job): %s', exc)
+        logger.exception('❌ Model pre-load failed: %s', exc)
 
 
 def pick_next_job():
-    """
-    Atomically claim the next pending job.
-
-    Uses select_for_update to prevent race conditions if multiple
-    workers are running (unlikely on Railway free tier but safe).
-    """
     from django.db import transaction
 
     with transaction.atomic():
@@ -86,44 +92,62 @@ def pick_next_job():
 
 
 def run_worker():
-    """Main worker loop."""
     logger.info('=== BraTS Segmentation Worker Started ===')
     logger.info('Poll interval: %ds | Max retries: %d', POLL_INTERVAL, MAX_RETRIES)
 
-    # Pre-load model at startup
+    # 🔥 Preload model
     preload_model()
 
     while not _shutdown:
         try:
+            logger.info('🔍 Checking for pending jobs...')
+
             job = pick_next_job()
 
             if job is None:
                 time.sleep(POLL_INTERVAL)
                 continue
 
-            logger.info('Picked up job %s (created: %s)', job.id, job.created_at)
+            logger.info('📦 Picked job %s (created: %s)', job.id, job.created_at)
 
             retries = 0
             while retries <= MAX_RETRIES:
                 try:
+                    # 🔥 Ensure model is ready
+                    try:
+                        model = get_model()
+                        logger.info('🧠 Model ready for job %s', job.id)
+                    except Exception as e:
+                        logger.exception('❌ Model not available for job %s: %s', job.id, e)
+                        raise e
+
+                    logger.info('🚀 Starting processing for job %s', job.id)
+
+                    # 🔥 Run actual task
                     process_job(job)
-                    logger.info('Job %s completed successfully', job.id)
+
+                    logger.info('✅ Job %s completed successfully', job.id)
                     break
+
                 except Exception as exc:
                     retries += 1
+
+                    logger.exception(
+                        '❌ ERROR in job %s (attempt %d/%d): %s',
+                        job.id, retries, MAX_RETRIES + 1, exc
+                    )
+
                     if retries > MAX_RETRIES:
                         logger.error(
-                            'Job %s failed after %d retries: %s',
-                            job.id, MAX_RETRIES, exc,
+                            '💥 Job %s failed after %d retries',
+                            job.id, MAX_RETRIES
                         )
-                        # process_job already marks the job as failed
                         break
                     else:
                         logger.warning(
-                            'Job %s failed (attempt %d/%d): %s — retrying...',
-                            job.id, retries, MAX_RETRIES + 1, exc,
+                            '🔁 Retrying job %s...',
+                            job.id
                         )
-                        # Reset status for retry
                         job.status = 'processing'
                         job.error_message = ''
                         job.save(update_fields=['status', 'error_message', 'updated_at'])
@@ -132,7 +156,7 @@ def run_worker():
         except KeyboardInterrupt:
             break
         except Exception as exc:
-            logger.exception('Worker loop error: %s', exc)
+            logger.exception('💥 Worker loop error: %s', exc)
             time.sleep(POLL_INTERVAL)
 
     logger.info('=== Worker shut down ===')
