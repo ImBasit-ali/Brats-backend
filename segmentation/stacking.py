@@ -83,6 +83,7 @@ def validate_upload_combination(uploaded_files: List[UploadedFile]) -> Tuple[str
 
 
 def stack_nifti_files(uploaded_files: List[UploadedFile]) -> nib.Nifti1Image:
+    """Stack NIfTI files from UploadedFile objects or file paths."""
     ordered = sorted(uploaded_files, key=lambda f: EXPECTED_MODALITIES.index(f.modality))
 
     volumes = []
@@ -91,7 +92,13 @@ def stack_nifti_files(uploaded_files: List[UploadedFile]) -> nib.Nifti1Image:
     reference_header = None
 
     for item in ordered:
-        nii = nib.load(item.file.path)
+        # Handle both file paths and file-like objects
+        if hasattr(item.file, 'path') and item.file.path:
+            nii = nib.load(item.file.path)
+        else:
+            # File-like object (e.g., Django UploadedFile)
+            nii = nib.load(item.file)
+        
         data = np.asarray(nii.dataobj, dtype=np.float32)
 
         if data.ndim == 4:
@@ -117,13 +124,20 @@ def stack_nifti_files(uploaded_files: List[UploadedFile]) -> nib.Nifti1Image:
 
 
 def stack_png_files(uploaded_files: List[UploadedFile]) -> Image.Image:
+    """Stack PNG files from UploadedFile objects or file paths."""
     ordered = sorted(uploaded_files, key=lambda f: EXPECTED_MODALITIES.index(f.modality))
 
     channels = []
     width = height = None
 
     for item in ordered:
-        img = Image.open(item.file.path).convert('L')
+        # Handle both file paths and file-like objects
+        if hasattr(item.file, 'path') and item.file.path:
+            img = Image.open(item.file.path).convert('L')
+        else:
+            # File-like object (e.g., Django UploadedFile)
+            img = Image.open(item.file).convert('L')
+        
         if width is None:
             width, height = img.size
         elif img.size != (width, height):
