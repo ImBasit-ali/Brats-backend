@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import nibabel as nib
 import numpy as np
+from PIL import Image
 from django.conf import settings
 from django.core.files.base import ContentFile
 from rest_framework import status
@@ -122,8 +123,8 @@ def create_segmentation(request):
 def stack_preview(request):
     """
     POST /api/segment/stack/
-    Stack the uploaded modalities and return the full stacked NIfTI volume URL
-    plus a quick preview image for fast UI feedback.
+    Efficiently stack the 4 uploaded NIfTI modalities and return stacked volume URL
+    with a quick preview image for UI feedback.
     """
     files = request.FILES.getlist('files')
     modalities = request.POST.getlist('modalities')
@@ -134,7 +135,6 @@ def stack_preview(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    temp_paths = []
     try:
         # Determine extension from first file
         extension = infer_extension(files[0].name)
@@ -157,35 +157,50 @@ def stack_preview(request):
             )
             file_wrappers.append(wrapper)
 
-        # FULL STACKING: Stack all modalities into a 4-channel NIfTI
+        # STACK in-memory (NIfTI or PNG)
         if extension == '.png':
             from .stacking import stack_png_files
             stacked_volume = stack_png_files(file_wrappers)
-            stacked_name = f'stacked_preview_{uuid4().hex}.png'
+            stacked_name = f'stacked_{uuid4().hex}.png'
         else:
             from .stacking import stack_nifti_files
             stacked_volume = stack_nifti_files(file_wrappers)
-            stacked_name = f'stacked_preview_{uuid4().hex}.nii.gz'
+            stacked_name = f'stacked_{uuid4().hex}.nii.gz'
 
-        # Upload stacked NIfTI to storage
+        # Upload stacked volume directly to storage (no temp files)
         stacked_key = f'user_{user_id}/stack_preview/{stacked_name}'
-        with tempfile.NamedTemporaryFile(suffix='.nii.gz' if extension != '.png' else '.png', delete=False) as tmp:
-            stacked_temp_path = tmp.name
-            temp_paths.append(stacked_temp_path)
+        stacked_bytes_io = io.BytesIO()
         
         if extension == '.png':
-            stacked_volume.save(stacked_temp_path, format='PNG')
+            stacked_volume.save(stacked_bytes_io, format='PNG')
+            stacked_bytes_io.seek(0)
         else:
-            nib.save(stacked_volume, stacked_temp_path)
+            nib.save(stacked_volume, stacked_bytes_io)
+            stacked_bytes_io.seek(0)
 
-        stacked_url = storage.upload(stacked_temp_path, stacked_key)
+        stacked_url = storage.upload_content(stacked_bytes_io.getvalue(), stacked_key)
         if stacked_url.startswith('/media/'):
             stacked_url = _build_public_url(request, stacked_url)
 
-        # Generate quick preview PNG for UI feedback
-        preview_source = _pick_preview_source(files, modalities)
-        preview_bytes = _build_preview_png_bytes(preview_source)
-        preview_b64 = base64.b64encode(preview_bytes).decode('ascii')
+        # Generate preview PNG from stacked volume's first slice (fast)
+        if extension == '.nii' or extension == '.nii.gz':
+            # Get first middle slice of stacked volume for preview
+            volume_data = np.asarray(stacked_volume.dataobj, dtype=np.float32)
+            # Take middle slice and first channel (T1)
+            mid_slice_idx = volume_data.shape[2] // 2
+            preview_slice = volume_data[:, :, mid_slice_idx, 0]
+            
+            # Normalize to 0-255
+            preview_slice = np.clip((preview_slice - preview_slice.min()) / (preview_slice.max() - preview_slice.min() + 1e-8) * 255, 0, 255)
+            preview_img = Image.fromarray(preview_slice.astype(np.uint8), mode='L')
+        else:
+            # For PNG, use the first channel as preview
+            preview_img = stacked_volume.split()[0]
+        
+        preview_bytes_io = io.BytesIO()
+        preview_img.save(preview_bytes_io, format='PNG')
+        preview_bytes_io.seek(0)
+        preview_b64 = base64.b64encode(preview_bytes_io.getvalue()).decode('ascii')
 
         return Response(
             {
@@ -212,12 +227,6 @@ def stack_preview(request):
             {'success': False, 'error': f'Stack error: {str(exc)}'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-    finally:
-        for temp_path in temp_paths:
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
 
 
 def _pick_preview_upload(files, modalities):
