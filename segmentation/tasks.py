@@ -8,9 +8,11 @@ Handles stacking, inference, mask generation, and storage upload.
 import logging
 import os
 import tempfile
+from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+from django.conf import settings
 from django.core.files.base import ContentFile
 from django.utils import timezone
 from PIL import Image
@@ -51,10 +53,7 @@ def process_job(job):
         _update_progress(job, 1, 'Preprocess')
         logger.info('Job %s: Starting preprocessing', job.id)
 
-        uploaded_files = list(job.files.filter(modality__in=EXPECTED_MODALITIES))
-        if not uploaded_files:
-            # Check if there's a single stacked file
-            uploaded_files = list(job.files.filter(modality='stacked'))
+        uploaded_files, temp_input_paths = _resolve_job_inputs(job, storage)
 
         if not uploaded_files:
             raise ValueError('No input files found for this job.')
@@ -83,8 +82,8 @@ def process_job(job):
             stacked_nifti = stack_nifti_files(wrapped)
 
         # Save stacked file to temp and upload
-        stacked_key = storage_key_for_job(job.id, 'stacked', f'stacked_input{extension}')
-        with tempfile.NamedTemporaryFile(suffix=extension, delete=False) as tmp:
+        stacked_key = storage_key_for_job(job.user_id, job.id, 'stacked', 'stacked_input.nii.gz')
+        with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp:
             stacked_temp_path = tmp.name
         try:
             nib.save(stacked_nifti, stacked_temp_path)
@@ -92,33 +91,26 @@ def process_job(job):
             job.stacked_url = stacked_url
             job.save(update_fields=['stacked_url', 'updated_at'])
             logger.info('Job %s: Stacked file uploaded -> %s', job.id, stacked_url)
+
+            # Also create a stacked UploadedFile record for local compatibility only.
+            if not settings.USE_SUPABASE_STORAGE:
+                stacked_name = f'{job.id}_stacked_input.nii.gz'
+                _ensure_stacked_uploaded_file(job, stacked_nifti, '.nii.gz', stacked_name)
+
+            # Step 3: Preview (downsampled)
+            _update_progress(job, 2, 'Preview')
+            logger.info('Job %s: Generating preview', job.id)
+            preview_url = _generate_preview(job, stacked_nifti, storage)
+            if preview_url:
+                job.preview_url = preview_url
+                job.save(update_fields=['preview_url', 'updated_at'])
+
+            # Step 4: Model Inference
+            _update_progress(job, 3, 'Inference')
+            logger.info('Job %s: Running model inference', job.id)
+            et_mask, wt_mask, tc_mask, affine, header = run_nifti_model_inference(stacked_temp_path)
         finally:
             _safe_unlink(stacked_temp_path)
-
-        # Also create a stacked UploadedFile record for legacy compatibility
-        stacked_name = f'{job.id}_stacked_input{extension}'
-        # Save a separate stacked UploadedFile record for downstream inference.
-        _ensure_stacked_uploaded_file(job, stacked_nifti, extension, stacked_name)
-
-        # Step 3: Preview (downsampled)
-        _update_progress(job, 2, 'Preview')
-        logger.info('Job %s: Generating preview', job.id)
-        preview_url = _generate_preview(job, stacked_nifti, storage)
-        if preview_url:
-            job.preview_url = preview_url
-            job.save(update_fields=['preview_url', 'updated_at'])
-
-        # Step 4: Model Inference
-        _update_progress(job, 3, 'Inference')
-        logger.info('Job %s: Running model inference', job.id)
-
-        # Get the stacked file path for inference
-        stacked_uploaded = job.files.filter(modality='stacked').order_by('-uploaded_at').first()
-        if not stacked_uploaded:
-            raise ValueError('No stacked model input file found.')
-
-        stacked_file_path = stacked_uploaded.file.path
-        et_mask, wt_mask, tc_mask, affine, header = run_nifti_model_inference(stacked_file_path)
 
         # Step 5: Post-processing — save masks
         _update_progress(job, 4, 'Postprocess')
@@ -132,14 +124,15 @@ def process_job(job):
         # Use whole tumor mask as the main mask_url
         job.mask_url = wt_url
 
-        # Create UploadedFile records for masks (legacy compatibility)
-        _create_mask_uploaded_file(job, et_mask, affine, header, 'et_mask')
-        wt_record = _create_mask_uploaded_file(job, wt_mask, affine, header, 'wt_mask')
-        _create_mask_uploaded_file(job, tc_mask, affine, header, 'tc_mask')
+        # Create UploadedFile records for masks in local mode only.
+        if not settings.USE_SUPABASE_STORAGE:
+            _create_mask_uploaded_file(job, et_mask, affine, header, 'et_mask')
+            wt_record = _create_mask_uploaded_file(job, wt_mask, affine, header, 'wt_mask')
+            _create_mask_uploaded_file(job, tc_mask, affine, header, 'tc_mask')
 
-        # Set segmentation_file for download compatibility
-        if wt_record:
-            job.segmentation_file = wt_record.file
+            # Set segmentation_file for download compatibility
+            if wt_record:
+                job.segmentation_file = wt_record.file
 
         # Generate metrics
         job.metrics = _generate_metrics(et_mask, wt_mask, tc_mask)
@@ -165,6 +158,9 @@ def process_job(job):
         job.error_message = str(exc)
         job.save(update_fields=['status', 'error_message', 'updated_at'])
         raise
+    finally:
+        for temp_path in locals().get('temp_input_paths', []):
+            _safe_unlink(temp_path)
 
 
 def _update_progress(job, step, step_name):
@@ -229,7 +225,7 @@ def _generate_preview(job, stacked_nifti, storage):
             img = img.resize(new_size, Image.Resampling.LANCZOS)
 
         # Save and upload
-        preview_key = storage_key_for_job(job.id, 'preview', 'preview.png')
+        preview_key = storage_key_for_job(job.user_id, job.id, 'preview', 'preview.png')
         with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
             preview_path = tmp.name
         try:
@@ -259,10 +255,66 @@ def _save_and_upload_mask(job, mask_data, affine, header, label, storage):
         temp_path = tmp.name
     try:
         nib.save(mask_img, temp_path)
-        mask_key = storage_key_for_job(job.id, 'results', f'{label}.nii.gz')
+        mask_key = storage_key_for_job(job.user_id, job.id, 'results', f'{label}.nii.gz')
         return storage.upload(temp_path, mask_key)
     finally:
         _safe_unlink(temp_path)
+
+
+def _resolve_job_inputs(job, storage):
+    """Resolve job inputs as local file-backed wrappers, downloading from storage when needed."""
+    from types import SimpleNamespace
+    from .stacking import EXPECTED_MODALITIES
+
+    wrapped = []
+    temp_paths = []
+
+    input_items = list(job.input_files_json or [])
+    if input_items:
+        for index, item in enumerate(input_items):
+            if isinstance(item, dict):
+                remote_key = item.get('key')
+                modality = item.get('modality')
+                original_name = item.get('original_name') or Path(remote_key or f'input_{index}.nii.gz').name
+            else:
+                remote_key = str(item)
+                modality = None
+                original_name = Path(remote_key).name
+
+            if not remote_key:
+                continue
+
+            guessed_modality = modality
+            if not guessed_modality:
+                lower_name = original_name.lower()
+                for candidate in EXPECTED_MODALITIES:
+                    if candidate in lower_name:
+                        guessed_modality = candidate
+                        break
+                if not guessed_modality:
+                    guessed_modality = 'stacked' if len(input_items) == 1 else EXPECTED_MODALITIES[index % len(EXPECTED_MODALITIES)]
+
+            suffix = '.nii.gz' if original_name.lower().endswith('.nii.gz') else '.nii'
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                temp_path = tmp.name
+
+            storage.download(remote_key, temp_path)
+            temp_paths.append(temp_path)
+            wrapped.append(
+                SimpleNamespace(
+                    original_name=original_name,
+                    modality=guessed_modality,
+                    file=SimpleNamespace(path=temp_path),
+                )
+            )
+
+        if wrapped:
+            return wrapped, temp_paths
+
+    uploaded_files = list(job.files.filter(modality__in=EXPECTED_MODALITIES))
+    if not uploaded_files:
+        uploaded_files = list(job.files.filter(modality='stacked'))
+    return uploaded_files, temp_paths
 
 
 def _create_mask_uploaded_file(job, mask_data, affine, header, label):

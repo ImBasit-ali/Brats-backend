@@ -5,10 +5,12 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
+from urllib.parse import urlparse
 
 import nibabel as nib
+import numpy as np
+from django.conf import settings
 from django.core.files.base import ContentFile
-from django.core.files.storage import default_storage
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -69,6 +71,8 @@ def create_segmentation(request):
         status='pending',
     )
 
+    storage = get_storage()
+
     # Save uploaded files
     input_keys = []
     for i, file in enumerate(files):
@@ -76,13 +80,30 @@ def create_segmentation(request):
             modality = modalities[i] if i < len(modalities) else EXPECTED_MODALITIES[i]
         else:
             modality = 'stacked'
-        uploaded_record = UploadedFile.objects.create(
-            job=job,
-            file=file,
-            original_name=file.name,
-            modality=modality,
+
+        safe_name = Path(file.name).name
+        remote_key = storage_key_for_job(user_id, job.id, 'uploads', safe_name)
+        upload_url = _upload_request_file_to_storage(file, storage, remote_key)
+
+        input_keys.append(
+            {
+                'key': remote_key,
+                'modality': modality,
+                'original_name': safe_name,
+                'url': upload_url,
+            }
         )
-        input_keys.append(uploaded_record.file.name)
+
+        # Keep local UploadedFile records in local/dev mode for backward compatibility.
+        if not settings.USE_SUPABASE_STORAGE:
+            if hasattr(file, 'seek'):
+                file.seek(0)
+            UploadedFile.objects.create(
+                job=job,
+                file=file,
+                original_name=file.name,
+                modality=modality,
+            )
 
     job.input_files_json = input_keys
     job.save(update_fields=['input_files_json'])
@@ -131,76 +152,40 @@ def stack_preview(request):
         if extension not in ('.nii', '.nii.gz', '.png'):
             raise ValueError('Only .nii, .nii.gz, and .png files are supported.')
 
-        # Stack files if there are 4 modalities, otherwise use the single file
-        if len(files) == 4:
-            # Create wrapper objects for the uploaded files
-            file_wrappers = []
-            for file_obj, modality in zip(files, modalities):
-                wrapper = SimpleNamespace(
-                    file=file_obj,
-                    original_name=file_obj.name,
-                    modality=modality
+        # Validate upload combination for immediate user feedback.
+        wrappers = []
+        for i, uploaded in enumerate(files):
+            wrappers.append(
+                SimpleNamespace(
+                    file=uploaded,
+                    original_name=uploaded.name,
+                    modality=modalities[i] if i < len(modalities) else ('stacked' if len(files) == 1 else EXPECTED_MODALITIES[i]),
                 )
-                file_wrappers.append(wrapper)
-
-            # Stack in memory directly (no temporary storage)
-            if extension == '.png':
-                stacked_image = stack_png_files(file_wrappers)
-                # Save stacked PNG
-                stacked_name = f'stacked_preview_{uuid4().hex}.png'
-                img_bytes = io.BytesIO()
-                stacked_image.save(img_bytes, format='PNG')
-                img_bytes.seek(0)
-                storage_path = default_storage.save(f'previews/{stacked_name}', ContentFile(img_bytes.read()))
-                mode = 'stacked-4-modalities'
-            else:
-                # Stack NIfTI files directly from uploaded files
-                stacked_nii = stack_nifti_files(file_wrappers)
-                # Save stacked NIfTI
-                stacked_name = f'stacked_preview_{uuid4().hex}.nii.gz'
-                with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as tmp:
-                    nib.save(stacked_nii, tmp.name)
-                    tmp_path = tmp.name
-
-                try:
-                    with open(tmp_path, 'rb') as f:
-                        storage_path = default_storage.save(f'previews/{stacked_name}', ContentFile(f.read()))
-                finally:
-                    # Clean up temporary file
-                    try:
-                        os.unlink(tmp_path)
-                    except:
-                        pass
-                mode = 'stacked-4-modalities'
-
-            preview_url = _build_public_url(request, default_storage.url(storage_path))
-
-            return Response(
-                {
-                    'success': True,
-                    'status': 'stacked',
-                    'preview_url': preview_url,
-                    'filename': stacked_name,
-                    'mode': mode,
-                },
-                status=status.HTTP_200_OK,
             )
-        else:
-            # Single file - just save and return
-            preview_name = f'stacked_preview_{uuid4().hex}{extension}'
-            storage_path = default_storage.save(f'previews/{preview_name}', files[0])
-            preview_url = _build_public_url(request, default_storage.url(storage_path))
+        validate_upload_combination(wrappers)
 
-            return Response(
-                {
-                    'success': True,
-                    'status': 'stacked',
-                    'preview_url': preview_url,
-                    'filename': preview_name,
-                    'mode': 'preview-single',
-                },
-                status=status.HTTP_200_OK,
-            )
+        preview_source = _pick_preview_source(files, modalities)
+        preview_bytes = _build_preview_png_bytes(preview_source)
+
+        user_id = _get_user_id(request)
+        preview_name = f'stacked_preview_{uuid4().hex}.png'
+        preview_key = f'user_{user_id}/stack_preview/{preview_name}'
+
+        storage = get_storage()
+        preview_url = storage.upload_content(preview_bytes, preview_key, content_type='image/png')
+        if preview_url.startswith('/media/'):
+            preview_url = _build_public_url(request, preview_url)
+
+        return Response(
+            {
+                'success': True,
+                'status': 'stacked',
+                'preview_url': preview_url,
+                'filename': preview_name,
+                'mode': 'preview-image-fast',
+            },
+            status=status.HTTP_200_OK,
+        )
 
     except ValueError as exc:
         return Response(
@@ -229,6 +214,86 @@ def _pick_preview_upload(files, modalities):
             return modality_to_file[modality], modality
 
     return files[0], 'first'
+
+
+def _pick_preview_source(files, modalities):
+    if len(files) == 1:
+        return files[0]
+
+    modality_to_file = {}
+    for index, uploaded_file in enumerate(files):
+        modality = modalities[index] if index < len(modalities) else None
+        if modality:
+            modality_to_file[modality] = uploaded_file
+
+    for modality in EXPECTED_MODALITIES:
+        if modality in modality_to_file:
+            return modality_to_file[modality]
+
+    return files[0]
+
+
+def _build_preview_png_bytes(uploaded_file):
+    extension = infer_extension(uploaded_file.name)
+
+    if extension == '.png':
+        from PIL import Image
+
+        uploaded_file.seek(0)
+        img = Image.open(uploaded_file).convert('L')
+    else:
+        if hasattr(uploaded_file, 'temporary_file_path'):
+            nii = nib.load(uploaded_file.temporary_file_path())
+        else:
+            uploaded_file.seek(0)
+            nii = nib.load(uploaded_file)
+
+        data = np.asarray(nii.dataobj, dtype=np.float32)
+        if data.ndim == 4:
+            data = data[..., 0]
+        if data.ndim != 3:
+            raise ValueError('NIfTI preview requires a 3D or 4D volume.')
+
+        mid_slice = data.shape[2] // 2
+        slice_data = data[:, :, mid_slice]
+        s_min, s_max = float(np.min(slice_data)), float(np.max(slice_data))
+        if s_max - s_min > 1e-8:
+            slice_data = ((slice_data - s_min) / (s_max - s_min) * 255).astype(np.uint8)
+        else:
+            slice_data = np.zeros_like(slice_data, dtype=np.uint8)
+
+        from PIL import Image
+        img = Image.fromarray(slice_data, mode='L')
+
+    max_dim = 320
+    if max(img.size) > max_dim:
+        ratio = max_dim / max(img.size)
+        img = img.resize((int(img.size[0] * ratio), int(img.size[1] * ratio)), Image.Resampling.LANCZOS)
+
+    output = io.BytesIO()
+    img.save(output, format='PNG')
+    return output.getvalue()
+
+
+def _upload_request_file_to_storage(uploaded_file, storage, remote_key):
+    suffix = infer_extension(uploaded_file.name) or '.bin'
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        temp_path = tmp.name
+
+    try:
+        with open(temp_path, 'wb') as target:
+            if hasattr(uploaded_file, 'chunks'):
+                for chunk in uploaded_file.chunks():
+                    target.write(chunk)
+            else:
+                target.write(uploaded_file.read())
+
+        return storage.upload(temp_path, remote_key)
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
 
 
 def _get_user_id(request):
@@ -301,15 +366,48 @@ def download_segmentation(request, job_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if not job.segmentation_file:
+    if job.segmentation_file:
+        from django.http import FileResponse
+        return FileResponse(
+            job.segmentation_file.open('rb'),
+            as_attachment=True,
+            filename=f'segmentation_{job.id}.nii.gz',
+        )
+
+    if not job.mask_url:
         return Response(
             {'error': 'No segmentation file available.'},
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    from django.http import FileResponse
-    return FileResponse(
-        job.segmentation_file.open('rb'),
-        as_attachment=True,
-        filename=f'segmentation_{job.id}.nii.gz',
-    )
+    # Fallback: stream from storage URL (Supabase/local public URL) when no local FileField exists.
+    parsed = urlparse(job.mask_url)
+    if not parsed.scheme:
+        local_path = Path(settings.MEDIA_ROOT) / job.mask_url.replace('/media/', '')
+        if not local_path.exists():
+            return Response(
+                {'error': 'Segmentation mask file not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        from django.http import FileResponse
+        return FileResponse(
+            open(local_path, 'rb'),
+            as_attachment=True,
+            filename=f'segmentation_{job.id}.nii.gz',
+        )
+
+    try:
+        import requests
+        from django.http import HttpResponse
+
+        upstream = requests.get(job.mask_url, timeout=120)
+        upstream.raise_for_status()
+
+        response = HttpResponse(upstream.content, content_type='application/gzip')
+        response['Content-Disposition'] = f'attachment; filename="segmentation_{job.id}.nii.gz"'
+        return response
+    except Exception as exc:
+        return Response(
+            {'error': f'Failed to fetch segmentation from storage: {exc}'},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )

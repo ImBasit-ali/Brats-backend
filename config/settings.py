@@ -63,7 +63,7 @@ IS_RAILWAY = bool(os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('RAILW
 SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://ulezkeisiqqarcljuvdi.supabase.co/')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 SUPABASE_BUCKET = os.environ.get('SUPABASE_BUCKET', 'brats-files')
-USE_SUPABASE_STORAGE = not DEBUG and bool(SUPABASE_URL)
+USE_SUPABASE_STORAGE = not DEBUG and bool(SUPABASE_URL) and bool(SUPABASE_KEY)
 
 
 def _ensure_dir(path_value):

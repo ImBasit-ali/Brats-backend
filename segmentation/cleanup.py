@@ -49,7 +49,7 @@ def cleanup_old_jobs(current_job):
             continue
 
         # Delete storage files
-        job_prefix = f'job_{job.id}'
+        job_prefix = f'user_{user_id}/job_{job.id}'
         try:
             storage.delete_prefix(f'{job_prefix}/uploads')
             storage.delete_prefix(f'{job_prefix}/stacked')

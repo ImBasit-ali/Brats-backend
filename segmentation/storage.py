@@ -194,11 +194,12 @@ def get_storage():
     return _storage_instance
 
 
-def storage_key_for_job(job_id, category, filename):
+def storage_key_for_job(user_id, job_id, category, filename):
     """
     Build a consistent storage key for a job file.
 
     Categories: 'uploads', 'stacked', 'results', 'preview'
-    Example: job_abc123/uploads/t1.nii.gz
+    Example: user_123/job_abc123/uploads/t1.nii.gz
     """
-    return f'job_{job_id}/{category}/{filename}'
+    safe_user_id = str(user_id or 'anonymous')
+    return f'user_{safe_user_id}/job_{job_id}/{category}/{filename}'
