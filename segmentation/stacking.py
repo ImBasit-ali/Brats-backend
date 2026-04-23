@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import List, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import nibabel as nib
 import numpy as np
@@ -82,8 +83,29 @@ def validate_upload_combination(uploaded_files: List[UploadedFile]) -> Tuple[str
     return 'modalities-four', extension
 
 
+def _load_nifti_file(item):
+    """Load a single NIfTI file (used for parallel loading)."""
+    if hasattr(item.file, 'path') and item.file.path:
+        nii = nib.load(item.file.path)
+    else:
+        nii = nib.load(item.file)
+    
+    data = np.asarray(nii.dataobj, dtype=np.float32)
+    
+    if data.ndim == 4:
+        if data.shape[-1] == 1:
+            data = data[..., 0]
+        else:
+            raise ValueError(f'{item.original_name} is already multi-channel; upload it as a single stacked file instead.')
+    
+    if data.ndim != 3:
+        raise ValueError(f'{item.original_name} must be a 3D NIfTI volume.')
+    
+    return item.modality, data, nii.affine, nii.header.copy()
+
+
 def stack_nifti_files(uploaded_files: List[UploadedFile]) -> nib.Nifti1Image:
-    """Stack NIfTI files from UploadedFile objects or file paths."""
+    """Stack NIfTI files with PARALLEL loading for speed."""
     ordered = sorted(uploaded_files, key=lambda f: EXPECTED_MODALITIES.index(f.modality) if f.modality in EXPECTED_MODALITIES else 999)
 
     volumes = []
@@ -91,33 +113,21 @@ def stack_nifti_files(uploaded_files: List[UploadedFile]) -> nib.Nifti1Image:
     reference_affine = None
     reference_header = None
 
-    for item in ordered:
-        # Handle both file paths and file-like objects
-        if hasattr(item.file, 'path') and item.file.path:
-            nii = nib.load(item.file.path)
-        else:
-            # File-like object (e.g., Django UploadedFile)
-            nii = nib.load(item.file)
+    # **PARALLEL LOADING** - Load all files simultaneously
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_load_nifti_file, item): item for item in ordered}
         
-        data = np.asarray(nii.dataobj, dtype=np.float32)
-
-        if data.ndim == 4:
-            if data.shape[-1] == 1:
-                data = data[..., 0]
-            else:
-                raise ValueError(f'{item.original_name} is already multi-channel; upload it as a single stacked file instead.')
-
-        if data.ndim != 3:
-            raise ValueError(f'{item.original_name} must be a 3D NIfTI volume.')
-
-        if reference_shape is None:
-            reference_shape = data.shape
-            reference_affine = nii.affine
-            reference_header = nii.header.copy()
-        elif data.shape != reference_shape:
-            raise ValueError('All modality NIfTI files must have identical dimensions.')
-
-        volumes.append(data)
+        for future in as_completed(futures):
+            modality, data, affine, header = future.result()
+            
+            if reference_shape is None:
+                reference_shape = data.shape
+                reference_affine = affine
+                reference_header = header
+            elif data.shape != reference_shape:
+                raise ValueError('All modality NIfTI files must have identical dimensions.')
+            
+            volumes.append(data)
 
     # If only 1 file, duplicate into 4 channels
     if len(volumes) == 1:
@@ -130,26 +140,34 @@ def stack_nifti_files(uploaded_files: List[UploadedFile]) -> nib.Nifti1Image:
     return nib.Nifti1Image(stacked.astype(np.float32), reference_affine, reference_header)
 
 
+def _load_png_file(item):
+    """Load a single PNG file (used for parallel loading)."""
+    if hasattr(item.file, 'path') and item.file.path:
+        img = Image.open(item.file.path).convert('L')
+    else:
+        img = Image.open(item.file).convert('L')
+    return item.modality, img
+
+
 def stack_png_files(uploaded_files: List[UploadedFile]) -> Image.Image:
-    """Stack PNG files from UploadedFile objects or file paths."""
+    """Stack PNG files with PARALLEL loading for speed."""
     ordered = sorted(uploaded_files, key=lambda f: EXPECTED_MODALITIES.index(f.modality) if f.modality in EXPECTED_MODALITIES else 999)
 
     channels = []
     width = height = None
 
-    for item in ordered:
-        # Handle both file paths and file-like objects
-        if hasattr(item.file, 'path') and item.file.path:
-            img = Image.open(item.file.path).convert('L')
-        else:
-            # File-like object (e.g., Django UploadedFile)
-            img = Image.open(item.file).convert('L')
+    # **PARALLEL LOADING** - Load all files simultaneously
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_load_png_file, item): item for item in ordered}
         
-        if width is None:
-            width, height = img.size
-        elif img.size != (width, height):
-            raise ValueError('All PNG modality files must have identical image dimensions.')
-        channels.append(img)
+        for future in as_completed(futures):
+            modality, img = future.result()
+            
+            if width is None:
+                width, height = img.size
+            elif img.size != (width, height):
+                raise ValueError('All PNG modality files must have identical image dimensions.')
+            channels.append(img)
 
     # If only 1 file, duplicate into 4 channels
     if len(channels) == 1:

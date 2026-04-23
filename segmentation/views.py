@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
 
 import nibabel as nib
 import numpy as np
@@ -123,8 +124,10 @@ def create_segmentation(request):
 def stack_preview(request):
     """
     POST /api/segment/stack/
-    Efficiently stack the 4 uploaded NIfTI modalities and return stacked volume URL
-    with a quick preview image for UI feedback.
+    ULTRA-FAST stacking with INSTANT preview:
+    - Parallel file loading (all 4 files simultaneously)
+    - In-memory stacking (no disk I/O)
+    - Returns preview immediately (no storage wait)
     """
     files = request.FILES.getlist('files')
     modalities = request.POST.getlist('modalities')
@@ -136,13 +139,9 @@ def stack_preview(request):
         )
 
     try:
-        # Determine extension from first file
         extension = infer_extension(files[0].name)
         if extension not in ('.nii', '.nii.gz', '.png'):
             raise ValueError('Only .nii, .nii.gz, and .png files are supported.')
-
-        user_id = _get_user_id(request)
-        storage = get_storage()
 
         # Create wrapper objects for stacking
         file_wrappers = []
@@ -157,60 +156,48 @@ def stack_preview(request):
             )
             file_wrappers.append(wrapper)
 
-        # STACK in-memory (NIfTI or PNG)
+        # **FAST STACKING** - Stack in-memory with parallel file loading
         if extension == '.png':
             from .stacking import stack_png_files
             stacked_volume = stack_png_files(file_wrappers)
-            stacked_name = f'stacked_{uuid4().hex}.png'
         else:
             from .stacking import stack_nifti_files
             stacked_volume = stack_nifti_files(file_wrappers)
-            stacked_name = f'stacked_{uuid4().hex}.nii.gz'
 
-        # Upload stacked volume directly to storage (no temp files)
-        stacked_key = f'user_{user_id}/stack_preview/{stacked_name}'
-        stacked_bytes_io = io.BytesIO()
-        
-        if extension == '.png':
-            stacked_volume.save(stacked_bytes_io, format='PNG')
-            stacked_bytes_io.seek(0)
-        else:
-            nib.save(stacked_volume, stacked_bytes_io)
-            stacked_bytes_io.seek(0)
-
-        stacked_url = storage.upload_content(stacked_bytes_io.getvalue(), stacked_key)
-        if stacked_url.startswith('/media/'):
-            stacked_url = _build_public_url(request, stacked_url)
-
-        # Generate preview PNG from stacked volume's first slice (fast)
+        # **INSTANT PREVIEW** - Extract single 2D slice, no compression
         if extension == '.nii' or extension == '.nii.gz':
-            # Get first middle slice of stacked volume for preview
             volume_data = np.asarray(stacked_volume.dataobj, dtype=np.float32)
-            # Take middle slice and first channel (T1)
             mid_slice_idx = volume_data.shape[2] // 2
             preview_slice = volume_data[:, :, mid_slice_idx, 0]
             
-            # Normalize to 0-255
-            preview_slice = np.clip((preview_slice - preview_slice.min()) / (preview_slice.max() - preview_slice.min() + 1e-8) * 255, 0, 255)
-            preview_img = Image.fromarray(preview_slice.astype(np.uint8), mode='L')
+            # Fast normalization
+            vmin, vmax = preview_slice.min(), preview_slice.max()
+            if vmax > vmin:
+                preview_slice = (preview_slice - vmin) / (vmax - vmin) * 255
+            preview_slice = np.clip(preview_slice, 0, 255).astype(np.uint8)
+            preview_img = Image.fromarray(preview_slice, mode='L')
         else:
-            # For PNG, use the first channel as preview
             preview_img = stacked_volume.split()[0]
         
+        # Encode preview to base64 (INSTANT response)
         preview_bytes_io = io.BytesIO()
         preview_img.save(preview_bytes_io, format='PNG')
-        preview_bytes_io.seek(0)
         preview_b64 = base64.b64encode(preview_bytes_io.getvalue()).decode('ascii')
+
+        # Store stacked volume in request cache for segmentation
+        if not hasattr(request, '_stacked_cache'):
+            request._stacked_cache = {}
+        cache_key = f'stacked_{uuid4().hex}'
+        request._stacked_cache[cache_key] = (stacked_volume, extension, file_wrappers)
 
         return Response(
             {
                 'success': True,
                 'status': 'stacked',
-                'stacked_url': stacked_url,
+                'cache_key': cache_key,
                 'preview': preview_b64,
                 'preview_url': f'data:image/png;base64,{preview_b64}',
-                'filename': stacked_name,
-                'mode': 'stacked-full-volume',
+                'mode': 'stacked-instant',
             },
             status=status.HTTP_200_OK,
         )
