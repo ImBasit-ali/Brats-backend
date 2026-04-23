@@ -1,4 +1,5 @@
 import io
+import base64
 import json
 import os
 import tempfile
@@ -25,9 +26,6 @@ from .serializers import (
 from .stacking import (
     EXPECTED_MODALITIES,
     infer_extension,
-    stack_nifti_files,
-    stack_png_files,
-    validate_upload_combination,
 )
 from .storage import get_storage, storage_key_for_job
 
@@ -152,35 +150,17 @@ def stack_preview(request):
         if extension not in ('.nii', '.nii.gz', '.png'):
             raise ValueError('Only .nii, .nii.gz, and .png files are supported.')
 
-        # Validate upload combination for immediate user feedback.
-        wrappers = []
-        for i, uploaded in enumerate(files):
-            wrappers.append(
-                SimpleNamespace(
-                    file=uploaded,
-                    original_name=uploaded.name,
-                    modality=modalities[i] if i < len(modalities) else ('stacked' if len(files) == 1 else EXPECTED_MODALITIES[i]),
-                )
-            )
-        validate_upload_combination(wrappers)
-
         preview_source = _pick_preview_source(files, modalities)
         preview_bytes = _build_preview_png_bytes(preview_source)
-
-        user_id = _get_user_id(request)
         preview_name = f'stacked_preview_{uuid4().hex}.png'
-        preview_key = f'user_{user_id}/stack_preview/{preview_name}'
-
-        storage = get_storage()
-        preview_url = storage.upload_content(preview_bytes, preview_key, content_type='image/png')
-        if preview_url.startswith('/media/'):
-            preview_url = _build_public_url(request, preview_url)
+        preview_b64 = base64.b64encode(preview_bytes).decode('ascii')
 
         return Response(
             {
                 'success': True,
                 'status': 'stacked',
-                'preview_url': preview_url,
+                'preview': preview_b64,
+                'preview_url': f'data:image/png;base64,{preview_b64}',
                 'filename': preview_name,
                 'mode': 'preview-image-fast',
             },
