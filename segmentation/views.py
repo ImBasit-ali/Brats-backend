@@ -122,8 +122,8 @@ def create_segmentation(request):
 def stack_preview(request):
     """
     POST /api/segment/stack/
-    Stack the uploaded modalities without starting segmentation.
-    Directly processes uploaded files in memory for speed.
+    Stack the uploaded modalities and return the full stacked NIfTI volume URL
+    plus a quick preview image for fast UI feedback.
     """
     files = request.FILES.getlist('files')
     modalities = request.POST.getlist('modalities')
@@ -144,12 +144,53 @@ def stack_preview(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    temp_paths = []
     try:
         # Determine extension from first file
         extension = infer_extension(files[0].name)
         if extension not in ('.nii', '.nii.gz', '.png'):
             raise ValueError('Only .nii, .nii.gz, and .png files are supported.')
 
+        user_id = _get_user_id(request)
+        storage = get_storage()
+
+        # Create wrapper objects for stacking
+        file_wrappers = []
+        for index, file_obj in enumerate(files):
+            modality = modalities[index] if index < len(modalities) else EXPECTED_MODALITIES[index]
+            wrapper = SimpleNamespace(
+                file=file_obj,
+                original_name=file_obj.name,
+                modality=modality
+            )
+            file_wrappers.append(wrapper)
+
+        # FULL STACKING: Stack all modalities into a 4-channel NIfTI
+        from .stacking import stack_nifti_files, stack_png_files
+        
+        if extension == '.png':
+            stacked_volume = stack_png_files(file_wrappers)
+            stacked_name = f'stacked_preview_{uuid4().hex}.png'
+        else:
+            stacked_volume = stack_nifti_files(file_wrappers)
+            stacked_name = f'stacked_preview_{uuid4().hex}.nii.gz'
+
+        # Upload stacked NIfTI to storage
+        stacked_key = f'user_{user_id}/stack_preview/{stacked_name}'
+        with tempfile.NamedTemporaryFile(suffix='.nii.gz' if extension != '.png' else '.png', delete=False) as tmp:
+            stacked_temp_path = tmp.name
+            temp_paths.append(stacked_temp_path)
+        
+        if extension == '.png':
+            stacked_volume.save(stacked_temp_path, format='PNG')
+        else:
+            nib.save(stacked_volume, stacked_temp_path)
+
+        stacked_url = storage.upload(stacked_temp_path, stacked_key)
+        if stacked_url.startswith('/media/'):
+            stacked_url = _build_public_url(request, stacked_url)
+
+        # Generate quick preview PNG for UI feedback
         preview_source = _pick_preview_source(files, modalities)
         preview_bytes = _build_preview_png_bytes(preview_source)
         preview_name = f'stacked_preview_{uuid4().hex}.png'
@@ -159,10 +200,11 @@ def stack_preview(request):
             {
                 'success': True,
                 'status': 'stacked',
+                'stacked_url': stacked_url,
                 'preview': preview_b64,
                 'preview_url': f'data:image/png;base64,{preview_b64}',
-                'filename': preview_name,
-                'mode': 'preview-image-fast',
+                'filename': stacked_name,
+                'mode': 'stacked-full-volume',
             },
             status=status.HTTP_200_OK,
         )
@@ -177,6 +219,12 @@ def stack_preview(request):
             {'success': False, 'error': str(exc)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+    finally:
+        for temp_path in temp_paths:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def _pick_preview_upload(files, modalities):
