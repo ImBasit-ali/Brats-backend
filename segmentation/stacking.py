@@ -84,7 +84,7 @@ def validate_upload_combination(uploaded_files: List[UploadedFile]) -> Tuple[str
 
 def stack_nifti_files(uploaded_files: List[UploadedFile]) -> nib.Nifti1Image:
     """Stack NIfTI files from UploadedFile objects or file paths."""
-    ordered = sorted(uploaded_files, key=lambda f: EXPECTED_MODALITIES.index(f.modality))
+    ordered = sorted(uploaded_files, key=lambda f: EXPECTED_MODALITIES.index(f.modality) if f.modality in EXPECTED_MODALITIES else 999)
 
     volumes = []
     reference_shape = None
@@ -119,13 +119,20 @@ def stack_nifti_files(uploaded_files: List[UploadedFile]) -> nib.Nifti1Image:
 
         volumes.append(data)
 
+    # If only 1 file, duplicate into 4 channels
+    if len(volumes) == 1:
+        volumes = volumes * 4
+
+    if len(volumes) != 4:
+        raise ValueError('NIfTI stacking requires either 1 file to duplicate or exactly 4 modality files.')
+
     stacked = np.stack(volumes, axis=-1)
     return nib.Nifti1Image(stacked.astype(np.float32), reference_affine, reference_header)
 
 
 def stack_png_files(uploaded_files: List[UploadedFile]) -> Image.Image:
     """Stack PNG files from UploadedFile objects or file paths."""
-    ordered = sorted(uploaded_files, key=lambda f: EXPECTED_MODALITIES.index(f.modality))
+    ordered = sorted(uploaded_files, key=lambda f: EXPECTED_MODALITIES.index(f.modality) if f.modality in EXPECTED_MODALITIES else 999)
 
     channels = []
     width = height = None
@@ -143,5 +150,12 @@ def stack_png_files(uploaded_files: List[UploadedFile]) -> Image.Image:
         elif img.size != (width, height):
             raise ValueError('All PNG modality files must have identical image dimensions.')
         channels.append(img)
+
+    # If only 1 file, duplicate into 4 channels
+    if len(channels) == 1:
+        channels = channels * 4
+
+    if len(channels) != 4:
+        raise ValueError('PNG stacking requires either 1 file to duplicate or exactly 4 modality files.')
 
     return Image.merge('RGBA', channels)

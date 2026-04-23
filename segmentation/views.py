@@ -129,16 +129,6 @@ def stack_preview(request):
     modalities = request.POST.getlist('modalities')
 
     if not files:
-        named_files = [
-            ('t1', request.FILES.get('t1')),
-            ('t1ce', request.FILES.get('t1ce')),
-            ('t2', request.FILES.get('t2')),
-            ('flair', request.FILES.get('flair')),
-        ]
-        files = [file_obj for _, file_obj in named_files if file_obj is not None]
-        modalities = [modality for modality, file_obj in named_files if file_obj is not None]
-
-    if not files:
         return Response(
             {'success': False, 'error': 'No files uploaded. Please upload at least one NIfTI file.'},
             status=status.HTTP_400_BAD_REQUEST,
@@ -157,7 +147,9 @@ def stack_preview(request):
         # Create wrapper objects for stacking
         file_wrappers = []
         for index, file_obj in enumerate(files):
-            modality = modalities[index] if index < len(modalities) else EXPECTED_MODALITIES[index]
+            modality = modalities[index] if index < len(modalities) else (EXPECTED_MODALITIES[index] if index < 4 else None)
+            if not modality:
+                raise ValueError(f'Unable to determine modality for file {index}')
             wrapper = SimpleNamespace(
                 file=file_obj,
                 original_name=file_obj.name,
@@ -166,12 +158,12 @@ def stack_preview(request):
             file_wrappers.append(wrapper)
 
         # FULL STACKING: Stack all modalities into a 4-channel NIfTI
-        from .stacking import stack_nifti_files, stack_png_files
-        
         if extension == '.png':
+            from .stacking import stack_png_files
             stacked_volume = stack_png_files(file_wrappers)
             stacked_name = f'stacked_preview_{uuid4().hex}.png'
         else:
+            from .stacking import stack_nifti_files
             stacked_volume = stack_nifti_files(file_wrappers)
             stacked_name = f'stacked_preview_{uuid4().hex}.nii.gz'
 
@@ -193,7 +185,6 @@ def stack_preview(request):
         # Generate quick preview PNG for UI feedback
         preview_source = _pick_preview_source(files, modalities)
         preview_bytes = _build_preview_png_bytes(preview_source)
-        preview_name = f'stacked_preview_{uuid4().hex}.png'
         preview_b64 = base64.b64encode(preview_bytes).decode('ascii')
 
         return Response(
@@ -215,8 +206,10 @@ def stack_preview(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
     except Exception as exc:
+        import traceback
+        traceback.print_exc()
         return Response(
-            {'success': False, 'error': str(exc)},
+            {'success': False, 'error': f'Stack error: {str(exc)}'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     finally:
