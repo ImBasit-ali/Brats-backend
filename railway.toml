@@ -10,7 +10,6 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 # gunicorn start command (Railway injects $PORT automatically)
-[deploy]
 startCommand = "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120"
 # Health check — Django must respond 200 at this path
 # Views: worker_health_check in segmentation/views.py → /api/health/
