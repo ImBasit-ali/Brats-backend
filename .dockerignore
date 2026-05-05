@@ -1,0 +1,59 @@
+# ============================================================
+# Docker build exclusions for BraTS AI backend
+# ============================================================
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Local environment files (secrets must come from Railway env vars)
+.env
+.env.local
+.env.*.local
+
+# Local database (Railway uses PostgreSQL or ephemeral SQLite)
+db.sqlite3
+
+# Node / frontend (not needed in backend image)
+node_modules/
+frontend/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Media uploads (ephemeral; not part of image)
+media/uploads/
+media/results/
+media/previews/
+
+# Test/dev artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

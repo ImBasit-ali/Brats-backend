@@ -1,0 +1,257 @@
+"""
+Django settings for BraTS AI backend.
+Production-ready: Railway (backend) + Vercel (frontend)
+"""
+
+import os
+from pathlib import Path
+import dj_database_url
+from dotenv import load_dotenv
+from corsheaders.defaults import default_headers
+
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
+
+
+def _csv_env(name, default):
+    value = os.environ.get(name)
+    if not value:
+        return default
+    return [item.strip() for item in value.split(',') if item.strip()]
+
+
+def _bool_env(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+# Model assets (override with env vars MODEL_KERAS_PATH / MODEL_LOG_PATH)
+MODEL_KERAS_PATH = Path(
+    os.environ.get('MODEL_KERAS_PATH', str(BASE_DIR / 'model' / 'model.keras'))
+)
+MODEL_PATH = os.path.join(BASE_DIR, "model", "model.keras")
+
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-key-change-in-production-!@#$%')
+
+DEBUG = _bool_env('DEBUG', False)
+
+# Read ALLOWED_HOSTS from env var (comma-separated) — falls back to Railway + local defaults
+ALLOWED_HOSTS = _csv_env(
+    'ALLOWED_HOSTS',
+    ['.railway.app', 'localhost', '127.0.0.1'],
+)
+
+
+CORS_ALLOW_ALL_ORIGINS = _bool_env('CORS_ALLOW_ALL_ORIGINS', DEBUG)
+CORS_ALLOWED_ORIGINS = _csv_env(
+    'CORS_ALLOWED_ORIGINS',
+    [
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'http://127.0.0.1:3000',
+        'http://127.0.0.1:5173',
+        'https://brats-ai-frontend.vercel.app',
+        'https://brats-ai-frontend-v513.vercel.app',
+    ],
+)
+
+# Allow X-Session-ID header from the React frontend (session-scoped cache keys)
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'X-Session-ID',
+]
+
+CSRF_TRUSTED_ORIGIN_REGEXES = [
+    r"^https://.*\.vercel\.app$",
+]
+CSRF_TRUSTED_ORIGINS = _csv_env(
+    'CSRF_TRUSTED_ORIGINS',
+    [
+        'https://brats-ai-frontend.vercel.app',
+        'https://brats-ai-frontend-v513.vercel.app',
+        'http://localhost:5173',
+        'http://localhost:3000',
+    ],
+)
+
+IS_RAILWAY = bool(os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('RAILWAY_PROJECT_ID'))
+
+# Supabase storage (production file storage)
+SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://ulezkeisiqqarcljuvdi.supabase.co/')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+SUPABASE_BUCKET = os.environ.get('SUPABASE_BUCKET', 'brats-files')
+USE_SUPABASE_STORAGE = not DEBUG and bool(SUPABASE_URL) and bool(SUPABASE_KEY)
+
+
+def _ensure_dir(path_value):
+    Path(path_value).mkdir(parents=True, exist_ok=True)
+    return Path(path_value)
+
+DEFAULT_LOCAL_DATABASE_URL = f"sqlite:///{(BASE_DIR / 'db.sqlite3').resolve().as_posix()}"
+RAILWAY_DATABASE_URL = os.environ.get('RAILWAY_DATABASE_URL')
+# Application definition
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    # Third party
+    'rest_framework',
+    'corsheaders',
+    # Local
+    'segmentation',
+]
+
+MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+]
+
+ROOT_URLCONF = 'config.urls'
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = 'config.wsgi.application'
+
+# Database
+DATABASE_URL = os.environ.get(
+    'DATABASE_URL',
+    RAILWAY_DATABASE_URL if IS_RAILWAY and RAILWAY_DATABASE_URL else DEFAULT_LOCAL_DATABASE_URL,
+)
+DATABASE_SSL_REQUIRE = DATABASE_URL.startswith(('postgres://', 'postgresql://'))
+DATABASES = {
+    'default': dj_database_url.config(
+        default=DATABASE_URL,
+        conn_max_age=600,
+        ssl_require=DATABASE_SSL_REQUIRE
+    )
+
+    
+}
+
+# Password validation
+AUTH_PASSWORD_VALIDATORS = [
+    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+]
+
+# Internationalization
+LANGUAGE_CODE = 'en-us'
+TIME_ZONE = 'UTC'
+USE_I18N = True
+USE_TZ = True
+
+# Static files
+STATIC_URL = '/static/'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+# Media files (uploads)
+MEDIA_URL = '/media/'
+if IS_RAILWAY:
+    railway_media_root = os.environ.get('MEDIA_ROOT', '/tmp/brats-media')
+    MEDIA_ROOT = _ensure_dir(railway_media_root)
+    FILE_UPLOAD_TEMP_DIR = str(_ensure_dir(os.environ.get('FILE_UPLOAD_TEMP_DIR', '/tmp/brats-upload-tmp')))
+else:
+    MEDIA_ROOT = BASE_DIR / 'media'
+
+# Honor reverse-proxy headers in production so absolute URLs (e.g. media links)
+# are generated with the correct https scheme and host.
+if IS_RAILWAY:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    USE_X_FORWARDED_HOST = True
+
+# Default primary key field type
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ── Redis Cache ──────────────────────────────────────────────────────────────
+# Railway Redis plugin auto-injects REDIS_URL into the environment.
+# IGNORE_EXCEPTIONS=True means the app continues working even if Redis is down.
+_REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': _REDIS_URL,
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            'SOCKET_CONNECT_TIMEOUT': 5,
+            'SOCKET_TIMEOUT': 10,
+            # Gracefully degrade when Redis is unavailable (no crash)
+            'IGNORE_EXCEPTIONS': True,
+        },
+        'TIMEOUT': 3600,  # 1 hour default TTL
+        'KEY_PREFIX': 'brats',
+    }
+}
+
+# REST Framework
+REST_FRAMEWORK = {
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 20,
+    'DEFAULT_PARSER_CLASSES': [
+        'rest_framework.parsers.JSONParser',
+        'rest_framework.parsers.MultiPartParser',
+        'rest_framework.parsers.FormParser',
+    ],
+}
+
+# File upload size limit (500 MB)
+DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000
+FILE_UPLOAD_MAX_MEMORY_SIZE = 524288000
+
+# Use temporary-file upload handler first to avoid in-memory buffering for large files.
+FILE_UPLOAD_HANDLERS = [
+    'django.core.files.uploadhandler.TemporaryFileUploadHandler',
+    'django.core.files.uploadhandler.MemoryFileUploadHandler',
+]
+
+# Logging
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{asctime}] {levelname} {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'segmentation': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+    },
+}

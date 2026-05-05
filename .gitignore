@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Django
+*.log
+local_settings.py
+staticfiles/
+db.sqlite3
+
+# Media uploads (ephemeral — not committed, Railway uses disk/Supabase)
+media/
+media/uploads/
+media/results/
+media/previews/
+*.nii
+# DO NOT add media/ here — needed for local dev to serve preview files
+
+# Environment variables (secrets)
+.env
+# .env.example IS committed (documents required vars, contains no secrets)
+!.env.example
+
+# Model file IS committed — required for Docker build context on Railway
+# model/model.keras (~68MB) must be in git for `COPY . .` to bundle it in image
+# If using Git LFS: git lfs track "*.keras"
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+media/
+*.nii
+__pycache__/
