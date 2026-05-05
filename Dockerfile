@@ -5,7 +5,7 @@
 # Server: gunicorn gthread (TF-safe, no async)
 # ============================================================
 
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # ── System dependencies ──────────────────────────────────────
 # libgomp1  → OpenMP required by TensorFlow/numpy
