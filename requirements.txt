@@ -15,7 +15,7 @@ requests>=2.31,<3.0
 keras>=3.14,<4.0
 scipy>=1.11,<2.0
 supabase>=2.0,<3.0
-tensorflow==2.19.0; python_version < "3.13"
+tensorflow-cpu==2.19.0; python_version < "3.13"
 # Redis cache backend for Django
 redis>=5.0,<6.0
 django-redis>=5.4,<6.0
