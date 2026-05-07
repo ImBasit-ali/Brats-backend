@@ -1,8 +1,10 @@
 from django.urls import path
 from . import views
+from .views import worker_health_check
 
 urlpatterns = [
-    path('health/', views.worker_health_check, name='worker-health'),
+    path("health/", worker_health_check),
+    # path('health/', views.worker_health_check, name='worker-health'),
     path('stack/', views.stack_preview, name='stack-preview-legacy'),
     path('segment/', views.create_segmentation, name='create-segmentation'),
     path('segment/stack/', views.stack_preview, name='stack-preview'),

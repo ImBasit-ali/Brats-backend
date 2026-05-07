@@ -30,6 +30,12 @@ from .stacking import (
     infer_extension,
 )
 from .storage import get_storage, storage_key_for_job
+from django.http import JsonResponse
+
+@api_view(['GET'])
+def worker_health_check(request):
+    return JsonResponse({"status": "ok"})
+
 
 
 @api_view(['POST'])

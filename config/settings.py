@@ -150,8 +150,10 @@ DATABASES = {
         conn_max_age=600,
         ssl_require=DATABASE_SSL_REQUIRE
     )
-
-    
+    #   "default": {
+    #     "ENGINE": "django.db.backends.sqlite3",
+    #     "NAME": BASE_DIR / "db.sqlite3",
+    # }
 }
 
 # Password validation
