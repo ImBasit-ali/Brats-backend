@@ -6,19 +6,12 @@ from django.urls import path, include
 from django.conf import settings
 from django.views.static import serve
 from django.urls import re_path
-from segmentation.views import worker_health_check
-# from .views import worker_health_check
-from django.http import JsonResponse
+from config.views import health_check
 
-def health(request):
-    return JsonResponse({"status": "ok"})
-    
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('segmentation.urls')),
-    path("health/", health),
-
-    # path('health/', worker_health_check),
+    path("health/", health_check),
 
 ]
 

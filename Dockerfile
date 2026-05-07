@@ -11,17 +11,23 @@ FROM python:3.11-slim
 # libgomp1  → OpenMP required by TensorFlow/numpy
 # libgl1    → nibabel/PIL image I/O
 # curl      → health-check probe during build (optional)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgomp1 \
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# ── Working directory ────────────────────────────────────────
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
     libglib2.0-0 \
     libsm6 \
     libxrender1 \
     libxext6 \
+    libgomp1 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Working directory ────────────────────────────────────────
-WORKDIR /app
+
 
 # ── Install Python dependencies (cached layer) ───────────────
 # Copy requirements first so Docker cache is reused on code-only changes
@@ -38,7 +44,9 @@ COPY . .
 # /app/media/             → ephemeral uploads (Railway ephemeral disk)
 # /app/staticfiles/       → whitenoise serves from here
 RUN mkdir -p /app/media /app/media/previews /app/staticfiles
+RUN python manage.py collectstatic --noinput || true
 
+EXPOSE 8000
 # ── Collect static files ─────────────────────────────────────
 # Must run with a valid SECRET_KEY; use a throwaway one for build only
 RUN SECRET_KEY="build-time-throwaway-key-do-not-use" \

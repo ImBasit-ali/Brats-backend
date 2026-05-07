@@ -3,12 +3,17 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 300"
-healthcheckPath = "/api/health/"
+preDeployCommand = "python manage.py migrate --noinput"
+
+startCommand = "sh -c 'gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 300'"
+
+healthcheckPath = "/health/"
 healthcheckTimeout = 120
+
 restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 3
+restartPolicyMaxRetries = 5
 
 [env]
 DEBUG = "False"
 DJANGO_SETTINGS_MODULE = "config.settings"
+PYTHONUNBUFFERED = "1"

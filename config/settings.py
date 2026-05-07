@@ -43,7 +43,7 @@ ALLOWED_HOSTS = _csv_env(
     'ALLOWED_HOSTS',
     ['.railway.app', 'localhost', '127.0.0.1'],
 )
-ALLOWED_HOSTS = ["*"]
+# ALLOWED_HOSTS = ["*"]
 
 
 CORS_ALLOW_ALL_ORIGINS = _bool_env('CORS_ALLOW_ALL_ORIGINS', DEBUG)
@@ -56,6 +56,7 @@ CORS_ALLOWED_ORIGINS = _csv_env(
         'http://127.0.0.1:5173',
         'https://brats-ai-frontend.vercel.app',
         'https://brats-ai-frontend-v513.vercel.app',
+        'https://brats-backend-production.up.railway.app'
     ],
 )
 
@@ -74,6 +75,7 @@ CSRF_TRUSTED_ORIGINS = _csv_env(
         'https://brats-ai-frontend-v513.vercel.app',
         'http://localhost:5173',
         'http://localhost:3000',
+        'https://brats-backend-production.up.railway.app'
     ],
 )
 
@@ -146,15 +148,15 @@ DATABASE_URL = os.environ.get(
 )
 DATABASE_SSL_REQUIRE = DATABASE_URL.startswith(('postgres://', 'postgresql://'))
 DATABASES = {
-    'default': dj_database_url.config(
-        default=DATABASE_URL,
-        conn_max_age=600,
-        ssl_require=DATABASE_SSL_REQUIRE
-    )
-    #   "default": {
-    #     "ENGINE": "django.db.backends.sqlite3",
-    #     "NAME": BASE_DIR / "db.sqlite3",
-    # }
+    # 'default': dj_database_url.config(
+    #     default=DATABASE_URL,
+    #     conn_max_age=600,
+    #     ssl_require=DATABASE_SSL_REQUIRE
+    # )
+      "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    }
 }
 
 # Password validation
