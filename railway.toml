@@ -1,27 +1,14 @@
-# ============================================================
-# railway.toml — Railway deployment configuration
-# Docs: https://docs.railway.app/reference/config-as-code
-# ============================================================
-
 [build]
-# Use the Dockerfile in the backend/ root directory
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-preDeployCommand = "python manage.py collectstatic --noinput && python manage.py migrate --noinput"
-# gunicorn start command (Railway injects $PORT automatically)
-startCommand = "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 120"
-# Health check — Django must respond 200 at this path
-# Views: worker_health_check in segmentation/views.py → /health/
-healthcheckPath = "/health/"
+startCommand = "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 300"
+healthcheckPath = "/api/health/"
 healthcheckTimeout = 120
-# Restart policy
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
 
 [env]
-# These are DEFAULTS — override in Railway dashboard with real values
-# DO NOT put secrets here (this file is committed to git)
 DEBUG = "False"
 DJANGO_SETTINGS_MODULE = "config.settings"
