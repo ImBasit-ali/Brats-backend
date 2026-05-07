@@ -135,21 +135,18 @@ def stack_nifti_files(uploaded_files: List[UploadedFile]) -> nib.Nifti1Image:
     reference_affine = None
     reference_header = None
 
-    # **PARALLEL LOADING** - Load all files simultaneously
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(_load_nifti_file, item): item for item in ordered}
+    # **SEQUENTIAL LOADING** - Load files one by one to save memory
+    for item in ordered:
+        modality, data, affine, header = _load_nifti_file(item)
         
-        for future in as_completed(futures):
-            modality, data, affine, header = future.result()
-            
-            if reference_shape is None:
-                reference_shape = data.shape
-                reference_affine = affine
-                reference_header = header
-            elif data.shape != reference_shape:
-                raise ValueError('All modality NIfTI files must have identical dimensions.')
-            
-            volumes_by_modality[modality] = data
+        if reference_shape is None:
+            reference_shape = data.shape
+            reference_affine = affine
+            reference_header = header
+        elif data.shape != reference_shape:
+            raise ValueError('All modality NIfTI files must have identical dimensions.')
+        
+        volumes_by_modality[modality] = data
 
     # If only 1 file, duplicate into 4 channels
     if len(volumes_by_modality) == 1:
@@ -200,18 +197,15 @@ def stack_png_files(uploaded_files: List[UploadedFile]) -> Image.Image:
     channels_by_modality = {}
     width = height = None
 
-    # **PARALLEL LOADING** - Load all files simultaneously
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(_load_png_file, item): item for item in ordered}
+    # **SEQUENTIAL LOADING** - Load files one by one to save memory
+    for item in ordered:
+        modality, img = _load_png_file(item)
         
-        for future in as_completed(futures):
-            modality, img = future.result()
-            
-            if width is None:
-                width, height = img.size
-            elif img.size != (width, height):
-                raise ValueError('All PNG modality files must have identical image dimensions.')
-            channels_by_modality[modality] = img
+        if width is None:
+            width, height = img.size
+        elif img.size != (width, height):
+            raise ValueError('All PNG modality files must have identical image dimensions.')
+        channels_by_modality[modality] = img
 
     # If only 1 file, duplicate into 4 channels
     if len(channels_by_modality) == 1:
@@ -245,21 +239,17 @@ def load_individual_nifti_files(uploaded_files: List[UploadedFile]) -> List[dict
 
     volumes = []
 
-    # **PARALLEL LOADING** - Load all files simultaneously
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(_load_nifti_file, item): item for item in ordered}
-        
-        for future in as_completed(futures):
-            item = futures[future]
-            modality, data, affine, header = future.result()
-            volumes.append({
-                'modality': modality,
-                'data': data,
-                'affine': affine,
-                'header': header,
-                'shape': tuple(data.shape),
-                'original_name': item.original_name,
-            })
+    # **SEQUENTIAL LOADING** - Load files one by one to save memory
+    for item in ordered:
+        modality, data, affine, header = _load_nifti_file(item)
+        volumes.append({
+            'modality': modality,
+            'data': data,
+            'affine': affine,
+            'header': header,
+            'shape': tuple(data.shape),
+            'original_name': item.original_name,
+        })
 
     return volumes
 
@@ -282,18 +272,14 @@ def load_individual_png_files(uploaded_files: List[UploadedFile]) -> List[dict]:
 
     images = []
 
-    # **PARALLEL LOADING** - Load all files simultaneously
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(_load_png_file, item): item for item in ordered}
-        
-        for future in as_completed(futures):
-            item = futures[future]
-            modality, img = future.result()
-            images.append({
-                'modality': modality,
-                'image': img,
-                'size': img.size,
-                'original_name': item.original_name,
-            })
+    # **SEQUENTIAL LOADING** - Load files one by one to save memory
+    for item in ordered:
+        modality, img = _load_png_file(item)
+        images.append({
+            'modality': modality,
+            'image': img,
+            'size': img.size,
+            'original_name': item.original_name,
+        })
 
     return images
