@@ -43,6 +43,7 @@ ALLOWED_HOSTS = _csv_env(
     'ALLOWED_HOSTS',
     ['.railway.app', 'localhost', '127.0.0.1'],
 )
+ALLOWED_HOSTS = ["*"]
 
 
 CORS_ALLOW_ALL_ORIGINS = _bool_env('CORS_ALLOW_ALL_ORIGINS', DEBUG)

@@ -12,6 +12,7 @@ from django.http import JsonResponse
 
 def health(request):
     return JsonResponse({"status": "ok"})
+    
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('segmentation.urls')),
