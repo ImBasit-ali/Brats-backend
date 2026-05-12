@@ -212,6 +212,94 @@ def upload_draft_files(request):
 
 
 @api_view(['POST'])
+def presigned_upload(request):
+    """
+    POST /api/segment/presigned-upload/
+    Returns presigned upload URLs for direct Supabase upload.
+    Expects JSON: {"files": [{"filename": "...", "modality": "..."}, ...]}
+    """
+    files_info = request.data.get('files', [])
+    if not files_info:
+        return Response({'error': 'No files provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not settings.USE_SUPABASE_STORAGE:
+        return Response({'error': 'Supabase storage is not configured on the backend.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user_id = _get_user_id(request)
+    storage = get_storage()
+
+    # --- CLEANUP PREVIOUS JOBS FOR THIS USER ---
+    old_jobs = SegmentationJob.objects.filter(user_id=user_id)
+    for old_job in old_jobs:
+        job_prefix = f'user_{user_id}/job_{old_job.id}'
+        try:
+            storage.delete_prefix(f'{job_prefix}/uploads')
+            storage.delete_prefix(f'{job_prefix}/stacked')
+            storage.delete_prefix(f'{job_prefix}/results')
+            storage.delete_prefix(f'{job_prefix}/preview')
+        except Exception:
+            pass
+        old_job.delete()
+
+    job = SegmentationJob.objects.create(
+        user_id=user_id,
+        status='draft',
+        grade='HGG',
+        regions={},
+        opacity=70
+    )
+
+    input_keys = []
+    response_urls = []
+
+    for i, item in enumerate(files_info):
+        safe_name = Path(item.get('filename', f'file_{i}')).name
+        modality = item.get('modality', 'stacked')
+        remote_key = storage_key_for_job(user_id, job.id, 'uploads', safe_name)
+        
+        try:
+            res = storage.client.storage.from_(storage.bucket).create_signed_upload_url(remote_key)
+            if isinstance(res, dict):
+                signed_url = res.get('signedUrl') or res.get('signedURL')
+                token = res.get('token')
+            else:
+                signed_url = str(res)
+                token = None
+            
+            if signed_url and signed_url.startswith('/'):
+                signed_url = f"{settings.SUPABASE_URL.rstrip('/')}/storage/v1{signed_url}"
+                
+            download_url = storage.get_public_url(remote_key)
+            
+            input_keys.append({
+                'key': remote_key,
+                'modality': modality,
+                'original_name': safe_name,
+                'url': download_url,
+            })
+            
+            response_urls.append({
+                'filename': safe_name,
+                'modality': modality,
+                'upload_url': signed_url,
+                'token': token,
+                'remote_key': remote_key
+            })
+        except Exception as e:
+            return Response({'error': f'Failed to create signed URL: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    job.input_files_json = input_keys
+    job.save(update_fields=['input_files_json'])
+
+    return Response({
+        'job_id': str(job.id),
+        'uploads': response_urls,
+        'success': True
+    }, status=status.HTTP_201_CREATED)
+
+
+
+@api_view(['POST'])
 def create_segmentation(request):
     """
     POST /api/segment/

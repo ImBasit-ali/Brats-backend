@@ -5,6 +5,7 @@ from .views import worker_health_check
 urlpatterns = [
     path("health/", worker_health_check),
     path('upload/', views.upload_draft_files, name='upload-draft-files'),
+    path('segment/presigned-upload/', views.presigned_upload, name='presigned-upload'),
     path('stack/', views.stack_preview, name='stack-preview-legacy'),
     path('segment/', views.create_segmentation, name='create-segmentation'),
     path('segment/stack/', views.stack_preview, name='stack-preview'),
