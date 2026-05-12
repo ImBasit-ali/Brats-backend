@@ -203,3 +203,34 @@ def storage_key_for_job(user_id, job_id, category, filename):
     """
     safe_user_id = str(user_id or 'anonymous')
     return f'user_{safe_user_id}/job_{job_id}/{category}/{filename}'
+
+
+def job_storage_prefix(user_id, job_id):
+    """Directory prefix for all files belonging to one job."""
+    safe_user_id = str(user_id or 'anonymous')
+    return f'user_{safe_user_id}/job_{job_id}'
+
+
+def cleanup_ephemeral_job_inputs(job, storage=None):
+    """
+    Remove raw uploads and stacked NIfTI for a job from storage.
+
+    Keeps results/ (masks) and preview/ so the client can still download
+    the segmentation and view the preview. The trained model on disk is
+    unaffected (see settings.MODEL_KERAS_PATH).
+    """
+    storage = storage or get_storage()
+    prefix = job_storage_prefix(job.user_id, job.id)
+    try:
+        storage.delete_prefix(f'{prefix}/uploads')
+        storage.delete_prefix(f'{prefix}/stacked')
+    except Exception:
+        # Best-effort cleanup; callers may log if needed
+        pass
+
+    if job.stacked_url:
+        job.stacked_url = ''
+        try:
+            job.save(update_fields=['stacked_url', 'updated_at'])
+        except Exception:
+            pass

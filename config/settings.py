@@ -28,7 +28,8 @@ def _bool_env(name, default=False):
         return default
     return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
 
-# Model assets (override with env vars MODEL_KERAS_PATH / MODEL_LOG_PATH)
+# Segmentation model (permanent on disk — not deleted with job uploads).
+# Override with MODEL_KERAS_PATH; default: BASE_DIR/model/model.keras
 MODEL_KERAS_PATH = Path(
     os.environ.get('MODEL_KERAS_PATH', str(BASE_DIR / 'model' / 'model.keras'))
 )
