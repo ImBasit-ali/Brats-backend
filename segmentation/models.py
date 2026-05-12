@@ -6,6 +6,7 @@ class SegmentationJob(models.Model):
     """Represents a brain tumor segmentation job."""
 
     STATUS_CHOICES = [
+        ('draft', 'Draft'),
         ('pending', 'Pending'),
         ('processing', 'Processing'),
         ('done', 'Done'),

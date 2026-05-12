@@ -18,7 +18,7 @@ from django.utils import timezone
 from PIL import Image
 
 from .inference import run_nifti_model_inference
-from .storage import get_storage, storage_key_for_job
+from .storage import cleanup_ephemeral_job_inputs, get_storage, storage_key_for_job
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,6 @@ def process_job(job):
     7. Update job with result URLs
     8. Clean up old jobs for the user
     """
-    from .models import SegmentationJob, UploadedFile
     from .stacking import (
         EXPECTED_MODALITIES,
         infer_extension,
@@ -47,6 +46,7 @@ def process_job(job):
     from .cleanup import cleanup_old_jobs
 
     storage = get_storage()
+    temp_input_paths = []
 
     try:
         # Step 1: Preprocessing
@@ -91,11 +91,6 @@ def process_job(job):
             job.stacked_url = stacked_url
             job.save(update_fields=['stacked_url', 'updated_at'])
             logger.info('Job %s: Stacked file uploaded -> %s', job.id, stacked_url)
-
-            # Also create a stacked UploadedFile record for local compatibility only.
-            if not settings.USE_SUPABASE_STORAGE:
-                stacked_name = f'{job.id}_stacked_input.nii.gz'
-                _ensure_stacked_uploaded_file(job, stacked_nifti, '.nii.gz', stacked_name)
 
             # Step 3: Preview (downsampled)
             _update_progress(job, 2, 'Preview')
@@ -159,8 +154,16 @@ def process_job(job):
         job.save(update_fields=['status', 'error_message', 'updated_at'])
         raise
     finally:
-        for temp_path in locals().get('temp_input_paths', []):
+        for temp_path in temp_input_paths:
             _safe_unlink(temp_path)
+        # Drop raw uploads + stacked NIfTI from disk/bucket; keep masks & preview PNG.
+        try:
+            job.refresh_from_db()
+            if job.status in ('done', 'failed'):
+                cleanup_ephemeral_job_inputs(job, storage)
+                logger.info('Job %s: Ephemeral inputs removed from storage', job.id)
+        except Exception as cleanup_inp_exc:
+            logger.warning('Job %s: Ephemeral input cleanup failed: %s', job.id, cleanup_inp_exc)
 
 
 def _update_progress(job, step, step_name):
@@ -169,32 +172,6 @@ def _update_progress(job, step, step_name):
     job.current_step_name = step_name
     job.status = 'processing'
     job.save(update_fields=['current_step', 'current_step_name', 'status', 'updated_at'])
-
-
-def _ensure_stacked_uploaded_file(job, stacked_nifti, extension, stacked_name):
-    """Create an UploadedFile record for the stacked volume (legacy compat)."""
-    from .models import UploadedFile
-
-    # Check if record already exists
-    existing = job.files.filter(modality='stacked').first()
-    if existing:
-        return existing
-
-    suffix = '.nii.gz' if extension == '.nii.gz' else '.nii'
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        temp_path = tmp.name
-    try:
-        nib.save(stacked_nifti, temp_path)
-        with open(temp_path, 'rb') as handle:
-            content = ContentFile(handle.read(), name=stacked_name)
-        return UploadedFile.objects.create(
-            job=job,
-            file=content,
-            original_name=stacked_name,
-            modality='stacked',
-        )
-    finally:
-        _safe_unlink(temp_path)
 
 
 def _generate_preview(job, stacked_nifti, storage):

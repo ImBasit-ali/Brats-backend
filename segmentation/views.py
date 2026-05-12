@@ -8,18 +8,16 @@ from types import SimpleNamespace
 from uuid import uuid4
 from urllib.parse import urlparse
 
-import nibabel as nib
 import numpy as np
 from PIL import Image
 from django.conf import settings
-from django.core.files.base import ContentFile
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 
-from .models import SegmentationJob, UploadedFile
+from .models import SegmentationJob
 from .serializers import (
     SegmentationJobStatusSerializer,
     SegmentationJobResultSerializer,
@@ -78,13 +76,6 @@ def _get_user_id(request):
             request.session['anon_user_id'] = user_id
         return user_id
     return uuid4().hex[:16]
-
-
-def _build_public_url(request, path):
-    url = request.build_absolute_uri(path)
-    if os.environ.get('RAILWAY_ENVIRONMENT') and url.startswith('http://'):
-        return f"https://{url[len('http://'):]}"
-    return url
 
 
 def _upload_request_file_to_storage(uploaded_file, storage, remote_key):
@@ -207,16 +198,9 @@ def upload_draft_files(request):
             }
         )
 
-        # Keep local UploadedFile records in local/dev mode for backward compatibility.
-        if not settings.USE_SUPABASE_STORAGE:
-            if hasattr(file, 'seek'):
-                file.seek(0)
-            UploadedFile.objects.create(
-                job=job,
-                file=file,
-                original_name=file.name,
-                modality=modality,
-            )
+    # Raw NIfTI paths live only in input_files_json + filesystem storage (see
+    # cleanup_ephemeral_job_inputs after segmentation). No UploadedFile rows
+    # for inputs — avoids duplicating large files under media/uploads/ in DB.
 
     job.input_files_json = input_keys
     job.save(update_fields=['input_files_json'])
@@ -327,15 +311,10 @@ def stack_preview(request):
             from .stacking import stack_nifti_files
             stacked_volume = stack_nifti_files(file_wrappers)
 
+        # Stacked volume is computed in memory only; we do not persist .nii here
+        # (avoids filling media/previews/). Client uses base64 preview (and may
+        # run full segmentation for downloadable outputs).
         stacked_url = None
-        if extension in ('.nii', '.nii.gz'):
-            preview_dir = Path(settings.MEDIA_ROOT) / 'previews'
-            preview_dir.mkdir(parents=True, exist_ok=True)
-            stacked_name = f'stacked_preview_{uuid4().hex}.nii.gz'
-            stacked_path = preview_dir / stacked_name
-            nib.save(stacked_volume, str(stacked_path))
-            stacked_relative_url = f"{settings.MEDIA_URL.rstrip('/')}/previews/{stacked_name}"
-            stacked_url = _build_public_url(request, stacked_relative_url)
 
         if extension in ('.nii', '.nii.gz'):
             volume_data = np.asarray(stacked_volume.dataobj, dtype=np.float32)
