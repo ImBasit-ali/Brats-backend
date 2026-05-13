@@ -57,9 +57,16 @@ CORS_ALLOWED_ORIGINS = _csv_env(
         'http://127.0.0.1:5173',
         'https://brats-ai-frontend.vercel.app',
         'https://brats-ai-frontend-v513.vercel.app',
-        'https://brats-backend-production.up.railway.app'
+        'https://brats-backend-production.up.railway.app',
     ],
 )
+
+# Any Vercel preview / production URL (*.vercel.app) — avoids CORS failures when
+# the deployment URL is not listed explicitly in CORS_ALLOWED_ORIGINS.
+# Add custom domains via CORS_ALLOWED_ORIGINS in Railway (comma-separated).
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r'^https://.+\.vercel\.app$',
+]
 
 # Allow X-Session-ID header from the React frontend (session-scoped cache keys)
 CORS_ALLOW_HEADERS = list(default_headers) + [
